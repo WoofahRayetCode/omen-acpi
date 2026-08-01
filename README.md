@@ -1,5 +1,7 @@
 # OMEN ACPI Toolkit
 
+## About
+
 A guided, machine-specific Linux ACPI reproduction for one reference laptop.
 
 On the reference machine the firmware never runs its own discrete-GPU power-down
@@ -499,11 +501,80 @@ Stable for its single intended target, and experimental by nature. It is a
 reproduction for one confirmed hardware and firmware combination, not a
 universal compatibility claim.
 
-## Upstream references
+## Technical references
 
-- [Linux initrd ACPI table override documentation](https://docs.kernel.org/admin-guide/acpi/initrd_table_override.html)
-- [CachyOS boot manager and Limine configuration](https://wiki.cachyos.org/configuration/boot_manager_configuration/)
+The sources below have different evidentiary roles. Standards and official
+documentation define the interfaces involved; community reports establish that
+the symptom occurs independently on other machines in the same family; prior
+art informed the investigation technique. None of those sources proves this
+patch correct for the reference machine. The concrete transformations in this
+repository come from its own firmware analysis and measurements.
+
+### Standards and official documentation
+
+- [ACPI Specification 6.4: OEM-supplied system-level control methods](https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/oem-supplied-system-level-control-methods.html)
+  defines `_PTS` and `_WAK`, including the S5 argument passed to `_PTS` during
+  an orderly shutdown.
+- [ACPI Specification 6.4: device power management objects](https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/device-power-management-objects.html)
+  defines `_PS3`, while the
+  [power-resource object](https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/power-resource-object.html)
+  defines its `_ON` and `_OFF` control methods.
+- [Linux initrd ACPI table override](https://docs.kernel.org/admin-guide/acpi/initrd_table_override.html)
+  documents the kernel mechanism used to load a locally rebuilt DSDT.
+- [Linux PCI power management](https://docs.kernel.org/power/pci.html)
+  distinguishes D3hot from D3cold, where Vcc is removed and device context is
+  lost.
+- [Linux ACPI WMI interface](https://docs.kernel.org/next/wmi/acpi-interface.html)
+  documents the proprietary ACPI WMI interface, including `WMID` data and
+  `WQxx` query methods such as `WQBZ` and `WQBE`.
+- [NVIDIA PCI-Express Runtime D3 power management](https://download.nvidia.com/XFree86/Linux-x86_64/570.124.04/README/dynamicpowermanagement.html)
+  describes the firmware and ACPI dependencies of the NVIDIA driver's RTD3
+  support, including `_PR0` and `_PR3`.
+- [Limine configuration reference](https://github.com/Limine-Bootloader/Limine/blob/v12.x/CONFIG.md)
+  documents boot entries, paths and configuration syntax. The
+  [CachyOS boot manager documentation](https://wiki.cachyos.org/configuration/boot_manager_configuration/)
+  covers the distribution integration used by this toolkit.
 - [Arch Linux Pacman manual](https://man.archlinux.org/man/pacman.8.en)
+  documents the package-management interface used for dependency installation.
+
+### Related reports
+
+- [Fedora Discussion: incomplete shutdown on HP OMEN 16-ap0038ns](https://discussion.fedoraproject.org/t/technical-issue-incomplete-shutdown-on-hp-omen-16-ap0038ns/184041)
+  reports residual heat, battery drain and a powered NVIDIA GPU across multiple
+  distributions and kernels.
+- [HP Support Community: Linux shutdown on HP OMEN 16-ap0xxx](https://h30434.www3.hp.com/t5/Gaming-Notebooks/After-shuting-down-from-a-Linux-distribution-HP-OMEN-16/td-p/9624996)
+  records the incomplete shutdown, `AE_AML_BUFFER_LIMIT` and `WQBZ`/`WQBE`
+  findings, including a report from the reference 16-ap0006sl with BIOS F.13.
+- [HP Support Community: additional HP OMEN 16-ap0xxx reports](https://h30434.www3.hp.com/t5/Gaming-Notebooks/HP-omen-did-not-shut-down/td-p/9623383)
+  includes other family members, such as the 16-ap0175ng and 16-ap0182AX,
+  showing residual heat and battery discharge after Linux shutdown.
+
+These reports are independent evidence that the symptom is not isolated. They
+are not evidence that this firmware-specific patch is correct for those models.
+
+### Related projects and prior art
+
+- [OmenLinux: ACPI Fix for HP OMEN 16-u0000sl](https://github.com/OmenLinux/ACPI-Fix-for-HP-Omen-16-u0000sl)
+  was an early reference for loading a modified HP OMEN DSDT through the
+  initramfs. It targets a different model, board and BIOS. This toolkit neither
+  distributes nor reuses that project's DSDT.
+
+### Project-specific investigation
+
+- [`patches/README.md`](patches/README.md) specifies the normalized S5 and
+  `WQBZ` transformations and their structural verification rules.
+- [`docs/nvde-analysis.md`](docs/nvde-analysis.md) records the DSDT plus 23-SSDT
+  analysis, reconstructs the `_PTS -> PEGP._PS3 -> PG00._OFF` chain, and
+  documents the measured post-resume re-arming of `NVDE`.
+- [`docs/nvde-audit.py`](docs/nvde-audit.py) is the read-only audit tool used to
+  classify symbol access and expose unresolved or ambiguous AML call paths.
+- The implementation identifies the two vulnerable loops in `WQBZ`, rebuilds
+  each AML variant independently, and compares the reconstructed AML hashes
+  with the installed state before reporting or removing it.
+
+Forum reports and earlier projects helped identify the symptom and useful
+investigation techniques. The actual patch derives from the ACPI tables of the
+reference HP OMEN MAX 16-ap0006sl, board 8E35, BIOS F.13.
 
 ## License
 
