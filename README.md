@@ -482,7 +482,7 @@ this repository.
 
 ## Firmware analysis notes
 
-[`docs/nvde-analisi.md`](docs/nvde-analisi.md) (in Italian) records a separate
+[`docs/nvde-analysis.md`](docs/nvde-analysis.md) records a separate
 audit of the `NVDE` namespace variable and its relationship to the firmware's
 GPU power-down path, together with the tool used to produce it,
 [`docs/nvde-audit.py`](docs/nvde-audit.py).

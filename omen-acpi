@@ -506,7 +506,12 @@ probe_boot() {
 
 probe_boot_if_cached() {
     local output
-    if [[ -x "$SUDO_BIN" ]] \
+    # sudo resets the environment, so OMEN_ACPI_TESTING would not reach the
+    # probe and a test run would inspect the real host instead. Where sudo is
+    # passwordless, that also makes every dashboard redraw shell out to
+    # journalctl and dmesg.
+    if [[ "${OMEN_ACPI_TESTING:-0}" != "1" ]] \
+        && [[ -x "$SUDO_BIN" ]] \
         && "$SUDO_BIN" -n true 2>/dev/null \
         && output="$("$SUDO_BIN" -n -- "$PROBE" --env 2>/dev/null)"; then
         parse_probe_output "$output"
@@ -943,6 +948,8 @@ inspect_variant_schema() {
 
 refine_installation_formats_cached() {
     local variant output rc schema
+    # Same reason as probe_boot_if_cached: never reach sudo from a test run.
+    [[ "${OMEN_ACPI_TESTING:-0}" != "1" ]] || return 0
     [[ -x "$SUDO_BIN" ]] || return 0
     "$SUDO_BIN" -n true 2>/dev/null || return 0
 

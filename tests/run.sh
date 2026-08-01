@@ -169,7 +169,19 @@ for removed_action in migrate restore-legacy refresh; do
         || fail "removed private-manager action did not fail closed: $removed_action"
 done
 
-python3 - "$ROOT" "$work/home" <<'PY'
+fake_sudo="$work/fake-sudo"
+cat > "$fake_sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$OMEN_ACPI_TEST_SUDO_LOG"
+exit 0
+EOF
+chmod 0700 "$fake_sudo"
+sed "s|readonly SUDO_BIN=\"/usr/bin/sudo\"|readonly SUDO_BIN=\"$fake_sudo\"|" \
+    "$ROOT/omen-acpi" > "$work/omen-acpi"
+chmod 0700 "$work/omen-acpi"
+
+OMEN_ACPI_TEST_SUDO_LOG="$work/sudo.log" \
+python3 - "$work/omen-acpi" "$work/home" <<'PY'
 import errno
 import os
 from pathlib import Path
@@ -179,7 +191,7 @@ import signal
 import sys
 import time
 
-root = Path(sys.argv[1])
+frontend = Path(sys.argv[1])
 home = Path(sys.argv[2])
 
 
@@ -195,8 +207,8 @@ def run_tty(*arguments: str, keys: bytes = b"q\n") -> bytes:
     pid, descriptor = pty.fork()
     if pid == 0:
         os.execve(
-            root / "omen-acpi",
-            [str(root / "omen-acpi"), *arguments],
+            frontend,
+            [str(frontend), *arguments],
             environment,
         )
 
@@ -261,6 +273,8 @@ if menu_text.count("What would you like to do?") < 2:
 
 print("TTY and plain-mode checks: PASS")
 PY
+[[ ! -e "$work/sudo.log" ]] \
+    || fail "interactive test reached sudo: $(tr '\n' ';' < "$work/sudo.log")"
 
 printf 'frontend state checks...\n'
 mkdir -p "$work/frontend"
