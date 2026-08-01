@@ -1,0 +1,37 @@
+# Machine-derived ACPI sources and build archives
+omen-ap0006sl-acpi-source-*.tar.gz
+omen-dsdt-f13-s5-build-*.tar.gz
+omen-dsdt-f13-combined-build-*.tar.gz
+
+# Local build and extraction directories
+omen-ap0006sl-acpi-source-*/
+omen-dsdt-f13-s5-build-*/
+omen-dsdt-f13-combined-build-*/
+omen-acpi-work.*/
+omen-dsdt-work.*/
+
+# Optional local artifact staging directory
+local-artifacts/
+
+# Python cache files created by local test tooling
+__pycache__/
+*.py[cod]
+
+# Raw firmware tables and decompiled sources; never commit machine-derived data
+*.dat
+*.aml
+*.dsl
+*.asl
+acpidump.txt
+
+# Release assets belong to GitHub Releases, not to the repository
+omen-acpi-toolkit-v*.tar.gz
+omen-acpi-toolkit-v*.tar.gz.sha256
+
+# Editor and backup leftovers
+*~
+*.sw[op]
+.*.swp
+
+# Local logs
+*.log
