@@ -179,6 +179,8 @@ chmod 0700 "$fake_sudo"
 sed "s|readonly SUDO_BIN=\"/usr/bin/sudo\"|readonly SUDO_BIN=\"$fake_sudo\"|" \
     "$ROOT/omen-acpi" > "$work/omen-acpi"
 chmod 0700 "$work/omen-acpi"
+ln -s "$ROOT/scripts" "$work/scripts"
+ln -s "$ROOT/uninstall.sh" "$work/uninstall.sh"
 
 OMEN_ACPI_TEST_SUDO_LOG="$work/sudo.log" \
 python3 - "$work/omen-acpi" "$work/home" <<'PY'
