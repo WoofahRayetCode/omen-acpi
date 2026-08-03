@@ -181,6 +181,29 @@ Choose **Guided setup**. The CLI will:
 8. transactionally create a separate Limine test entry;
 9. offer a reboot and tell you exactly which entry to select.
 
+Guided setup first displays the complete choice and only then asks for a
+variant-specific confirmation:
+
+```text
+Choose the experimental setup:
+
+  1. S5-only
+     Recommended — confirmed shutdown correction
+
+  2. Combined
+     S5 correction plus the separate WQBZ bounds patch
+
+  3. Both
+     Create two independent experimental Limine entries
+
+  b. Back
+
+Choose an option [1 — S5-only]:
+```
+
+Enter selects S5-only. `b`, EOF or a rejected confirmation returns without
+changing anything. The confirmation names the selected setup.
+
 The same operations are available as explicit subcommands:
 
 ```text
@@ -249,6 +272,33 @@ useful stress case is to use the NVIDIA GPU immediately before shutdown and
 compare powered-off battery loss across several repetitions.
 
 ## Preventive stock recovery
+
+The dashboard key `r` always opens **Stock boot and recovery**, independently
+of any pending setup workflow. A pending workflow is shown separately as `p`
+and retains its existing reboot-or-resume behaviour. The recovery submenu has
+no default action:
+
+```text
+Stock boot and recovery
+
+Current boot: <current state>
+Preventive snapshot: <valid, missing, stale, modified or unavailable>
+Normal stock entry: <available, missing, ambiguous or unavailable>
+Managed recovery entry: <available, missing, modified or unavailable>
+
+  1. Create or refresh the preventive recovery snapshot
+  2. Recover or reboot into a stock boot
+  3. Show detailed recovery status
+  4. Remove the managed recovery snapshot and entry
+  b. Back
+
+Selection:
+```
+
+Option 1 explains and confirms snapshot writes, option 2 confirms before it
+creates a missing managed recovery entry, option 3 is read-only, and option 4
+explains and confirms protected removal. Recommendations are contextual but
+never run an action automatically.
 
 `omen-acpi prepare-stock-recovery` works only during an exactly supported,
 clean, verified stock boot. It selects one unambiguous normal entry, copies its

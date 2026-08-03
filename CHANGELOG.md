@@ -2,6 +2,18 @@
 
 ## 2.1.10 - 2026-08-03
 
+- Fixed Guided setup so its complete variant menu is printed directly to the
+  terminal instead of being captured by command substitution. The selected
+  value now travels through an explicit result variable and can only be `s5`,
+  `combined` or `both`, with no interface text mixed into it.
+- Moved setup confirmation after selection and made it name S5-only, Combined
+  or Both. Back, EOF, invalid input and rejection all return without partial
+  changes.
+- Replaced the overloaded `Stock-boot recovery` action with a dedicated
+  `Stock boot and recovery` submenu for snapshot creation/refresh, stock
+  recovery/reboot, read-only detailed status and protected removal.
+- Separated pending workflows onto the contextual `p` menu key; `r` now always
+  opens recovery regardless of pending state.
 - Added a real preventive stock-boot snapshot. On a clean verified stock boot,
   the toolkit records provenance and a strict JSON manifest under
   `/var/lib/omen-acpi-stock-recovery` and copies the stock kernel plus every
@@ -24,6 +36,8 @@
 - Added synthetic recovery fixtures covering preparation gates, parser
   ambiguity, payload ordering and fidelity, tamper detection, safe Limine
   editing, rollback, idempotence, removal guards and recovery recognition.
+- The v2.1.10 Release contains exactly the toolkit tarball, its external
+  SHA-256 file and the executable `update.sh` updater.
 
 ## 2.1.9 - 2026-08-01
 

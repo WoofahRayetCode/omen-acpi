@@ -59,6 +59,7 @@ ASSUME_YES=0
 PLAIN_MODE=0
 STOCK_RECOVERY_PREPARED=0
 STOCK_RECOVERY_STATUS_LABEL="NOT CHECKED"
+SETUP_VARIANT_RESULT=''
 BANNER_VERTICAL='|'
 
 if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
@@ -751,6 +752,18 @@ prepare_stock_recovery() {
     STOCK_RECOVERY_PREPARED=1
 }
 
+prepare_stock_recovery_interactive() {
+    probe_boot
+    if [[ "$PROBE_STATE" != "stock" || "$PROBE_CLEAN" != "1" ]]; then
+        die "A preventive recovery snapshot can only be created during a clean verified stock boot."
+    fi
+    section "Create or refresh preventive recovery snapshot"
+    printf 'This will copy the verified stock kernel and initramfs into a reserved directory on the ESP\n'
+    printf 'and write its authenticated manifest under /var/lib. No Limine default is changed.\n\n'
+    confirm_dangerous "Create or refresh the preventive recovery snapshot?" no || return 0
+    prepare_stock_recovery
+}
+
 stock_recovery_status() {
     local output
     if [[ "${OMEN_ACPI_TESTING:-0}" != "1" && -x "$SUDO_BIN" ]] \
@@ -769,8 +782,21 @@ recover_stock() {
         success "A clean stock DSDT is already active; no recovery is needed."
         return 0
     fi
+    case "$PROBE_STATE" in
+        s5|combined) ;;
+        *) die "The current boot state is ambiguous or unverifiable; automatic recovery is blocked." ;;
+    esac
     ensure_dependencies stock-recovery
     ensure_admin
+    local preview
+    preview="$("$SUDO_BIN" -- "$STOCK_RECOVERY" status 2>/dev/null || true)"
+    if grep -Fxq $'NORMAL_ENTRY\tmissing' <<<"$preview" \
+        && grep -Fxq $'SNAPSHOT\tvalid' <<<"$preview"; then
+        printf 'The normal stock entry is missing. The managed %s entry will be created\n' \
+            'zz-omen-acpi-stock-recovery'
+        printf 'from the verified snapshot. The Limine default will not be changed.\n\n'
+        confirm_dangerous "Create or restore the managed stock recovery entry?" no || return 0
+    fi
     result="$("$SUDO_BIN" -- "$STOCK_RECOVERY" recover)" \
         || die "Automatic stock recovery is unavailable. If no snapshot was prepared before the normal entry disappeared, use external manual recovery media."
     IFS=$'\t' read -r kind title <<<"$result"
@@ -793,9 +819,78 @@ recover_stock() {
 
 remove_stock_recovery() {
     ensure_dependencies stock-recovery
+    section "Remove managed stock recovery"
+    printf 'This removes only the owned zz-omen-acpi-stock-recovery entry, its copied payloads,\n'
+    printf 'and its verified manifest. Existing normal and experimental entries are not edited.\n\n'
+    confirm_dangerous "Remove the managed recovery snapshot and entry?" no || return 0
     ensure_admin
-    confirm_dangerous "Remove the verified stock recovery entry, payloads and state?" no || return 0
     "$SUDO_BIN" -- "$STOCK_RECOVERY" remove
+}
+
+show_stock_recovery_details() {
+    local output
+    ensure_dependencies stock-recovery
+    ensure_admin
+    section "Detailed stock recovery status"
+    if ! output="$("$SUDO_BIN" -- "$STOCK_RECOVERY" status)"; then
+        warn "Recovery status is unavailable; no changes were made."
+        return 1
+    fi
+    awk -F '\t' '
+        $1 == "BOOT" { print "Current boot: " $2 }
+        $1 == "DSDT_REVISION" { print "DSDT revision: " $2 }
+        $1 == "DETECTION" { print "Detection: " $2 }
+        $1 == "SNAPSHOT" { print "Preventive snapshot: " $2 }
+        $1 == "SNAPSHOT_CREATED" { print "Snapshot date: " $2 }
+        $1 == "SNAPSHOT_VERSION" { print "Snapshot version: " $2 }
+        $1 == "KERNEL" { print "Saved kernel: " $2 }
+        $1 == "MODULES" { print "Saved modules: " $2 }
+        $1 == "HASHES" { print "Snapshot hashes: " $2 }
+        $1 == "NORMAL_ENTRY" { print "Normal stock entry: " $2 }
+        $1 == "RECOVERY_ENTRY" { print "Managed recovery entry: " $2 }
+        $1 == "RECOMMENDATION" { print "Recommended action: " $2 }
+    ' <<<"$output"
+}
+
+stock_recovery_menu() {
+    local choice output boot_label snapshot_label normal_label recovery_label
+    while true; do
+        ensure_dependencies probe
+        probe_boot_if_cached || true
+        boot_label="$(boot_state_label)"
+        snapshot_label='unavailable'; normal_label='unavailable'; recovery_label='unavailable'
+        if output="$(stock_recovery_status 2>/dev/null)"; then
+            snapshot_label="$(awk -F '\t' '$1=="SNAPSHOT" {print $2; exit}' <<<"$output")"
+            normal_label="$(awk -F '\t' '$1=="NORMAL_ENTRY" {print $2; exit}' <<<"$output")"
+            recovery_label="$(awk -F '\t' '$1=="RECOVERY_ENTRY" {print $2; exit}' <<<"$output")"
+        fi
+        section "Stock boot and recovery"
+        printf 'Current boot: %s\n' "$boot_label"
+        printf 'Preventive snapshot: %s\n' "${snapshot_label:-unavailable}"
+        printf 'Normal stock entry: %s\n' "${normal_label:-unavailable}"
+        printf 'Managed recovery entry: %s\n\n' "${recovery_label:-unavailable}"
+        printf '  1. Create or refresh the preventive recovery snapshot\n'
+        printf '     Save a verified stock kernel and initramfs for future recovery.\n'
+        printf '     This requires a clean stock boot.\n\n'
+        printf '  2. Recover or reboot into a stock boot\n'
+        printf '     Use the normal entry when available.\n'
+        printf '     If it is missing, recreate the managed recovery entry from a valid snapshot.\n\n'
+        printf '  3. Show detailed recovery status\n\n'
+        printf '  4. Remove the managed recovery snapshot and entry\n\n'
+        printf '  b. Back\n\n'
+        if ! read -r -p 'Selection: ' choice; then
+            printf '\n'
+            return 0
+        fi
+        case "$choice" in
+            1) ( prepare_stock_recovery_interactive ) || true; pause_for_user ;;
+            2) ( recover_stock ) || true; pause_for_user ;;
+            3) ( show_stock_recovery_details ) || true; pause_for_user ;;
+            4) ( remove_stock_recovery ) || true; pause_for_user ;;
+            b|B) return 0 ;;
+            *) warn "Invalid selection." ;;
+        esac
+    done
 }
 
 write_pointer() {
@@ -1337,16 +1432,33 @@ doctor() {
 
 choose_setup_variant() {
     local choice
-    printf '\nChoose what to prepare:\n\n'
-    printf '  %b1.%b S5-only       %bRecommended; confirmed shutdown correction%b\n' "$CYAN" "$RESET" "$GREEN" "$RESET"
-    printf '  %b2.%b Combined      S5 correction plus the separate WQBZ bounds patch\n' "$CYAN" "$RESET"
-    printf '  %b3.%b Both          Create two independent Limine test entries\n' "$CYAN" "$RESET"
-    read -r -p 'Selection [1]: ' choice
-    case "${choice:-1}" in
-        1) printf 's5\n' ;;
-        2) printf 'combined\n' ;;
-        3) printf 'both\n' ;;
-        *) die "Invalid selection." ;;
+    SETUP_VARIANT_RESULT=''
+    while true; do
+        printf '\nChoose the experimental setup:\n\n'
+        printf '  1. S5-only\n     Recommended — confirmed shutdown correction\n\n'
+        printf '  2. Combined\n     S5 correction plus the separate WQBZ bounds patch\n\n'
+        printf '  3. Both\n     Create two independent experimental Limine entries\n\n'
+        printf '  b. Back\n\n'
+        if ! read -r -p 'Choose an option [1 — S5-only]: ' choice; then
+            printf '\n'
+            return 1
+        fi
+        case "${choice:-1}" in
+            1) SETUP_VARIANT_RESULT='s5'; return 0 ;;
+            2) SETUP_VARIANT_RESULT='combined'; return 0 ;;
+            3) SETUP_VARIANT_RESULT='both'; return 0 ;;
+            b|B) return 1 ;;
+            *) warn "Invalid selection. Choose 1, 2, 3 or b." ;;
+        esac
+    done
+}
+
+setup_variant_label() {
+    case "$1" in
+        s5) printf 'S5-only' ;;
+        combined) printf 'Combined' ;;
+        both) printf 'Both' ;;
+        *) return 1 ;;
     esac
 }
 
@@ -1377,17 +1489,20 @@ guided_setup() {
     section "Guided setup"
     printf 'This workflow compiles and installs a machine-specific ACPI table override.\n'
     printf 'It never flashes the BIOS and never replaces the normal CachyOS entry.\n'
-    confirm "Continue with the experimental setup?" no || return 0
-
     require_supported_machine
     if [[ -z "$requested" ]]; then
-        requested="$(choose_setup_variant)"
+        choose_setup_variant || return 0
+        requested="$SETUP_VARIANT_RESULT"
     else
         case "$requested" in
             s5|combined|both) ;;
             *) die "Variant must be s5, combined or both." ;;
         esac
     fi
+    local requested_label
+    requested_label="$(setup_variant_label "$requested")"
+    printf '\nSelected setup: %s\n' "$requested_label"
+    confirm "Continue with the $requested_label experimental setup?" no || return 0
     require_stock_boot setup "$requested" || return 4
     ensure_dependencies setup
 
@@ -1471,7 +1586,7 @@ resume_pending_workflow() {
     esac
 }
 
-recovery_menu_action() {
+pending_workflow_action() {
     local action variant
     if action="$(pending_action 2>/dev/null)"; then
         variant="$(pending_variant 2>/dev/null || true)"
@@ -1481,7 +1596,7 @@ recovery_menu_action() {
             resume_pending_workflow
         fi
     else
-        recover_stock
+        warn "No pending workflow is available."
     fi
 }
 
@@ -1548,9 +1663,10 @@ show_banner() {
     refine_installation_formats_cached
     boot_label="$(boot_state_label)"
     dashboard_line "Current boot" "$PROBE_REVISION" "$boot_label" "$(boot_state_color)"
-    STOCK_RECOVERY_STATUS_LABEL="$(stock_recovery_status | head -n 1)"
+    STOCK_RECOVERY_STATUS_LABEL="$(stock_recovery_status | awk -F '\t' '$1=="SNAPSHOT" {print toupper($2); exit}')"
+    [[ -n "$STOCK_RECOVERY_STATUS_LABEL" ]] || STOCK_RECOVERY_STATUS_LABEL='UNAVAILABLE'
     dashboard_line "Stock recovery" "Preventive snapshot" "$STOCK_RECOVERY_STATUS_LABEL" \
-        "$([[ "$STOCK_RECOVERY_STATUS_LABEL" == VALID$'\t'* ]] && printf '%s' "$GREEN" || printf '%s' "$YELLOW")"
+        "$([[ "$STOCK_RECOVERY_STATUS_LABEL" == "VALID" ]] && printf '%s' "$GREEN" || printf '%s' "$YELLOW")"
 
     dashboard_line "S5-only" "Limine test entry" \
         "$(variant_dashboard_status s5)" \
@@ -1596,7 +1712,7 @@ recommended_action() {
         fi
     elif [[ "$PROBE_STATE" == "s5" || "$PROBE_STATE" == "combined" ]]; then
         printf 'Reboot into the normal Limine entry before changing an experimental entry.'
-    elif [[ "$PROBE_STATE" == "stock" && "$STOCK_RECOVERY_STATUS_LABEL" != VALID$'\t'* ]]; then
+    elif [[ "$PROBE_STATE" == "stock" && "$STOCK_RECOVERY_STATUS_LABEL" != "VALID" ]]; then
         printf 'Prepare the preventive stock-recovery snapshot before installing a variant.'
     elif [[ "$PROBE_S5_FORMAT" == "managed" || "$PROBE_COMBINED_FORMAT" == "managed" ]]; then
         printf 'Run status; after a kernel/initramfs update, remove and freshly install each entry.'
@@ -1711,14 +1827,13 @@ interactive_main() {
         printf '  %b3.%b Manage Limine entries\n' "$CYAN" "$RESET"
         printf '  %b4.%b Dependencies\n' "$CYAN" "$RESET"
         printf '  %b5.%b Advanced tools\n' "$CYAN" "$RESET"
+        printf '  %br.%b Stock boot and recovery\n' "$CYAN" "$RESET"
         if pending_text="$(pending_description 2>/dev/null)"; then
             if pending_is_same_boot; then
-                printf '  %br.%b Reboot into stock to continue %s\n' "$CYAN" "$RESET" "$pending_text"
+                printf '  %bp.%b Reboot into stock to continue pending %s\n' "$CYAN" "$RESET" "$pending_text"
             else
-                printf '  %br.%b Resume pending %s\n' "$CYAN" "$RESET" "$pending_text"
+                printf '  %bp.%b Resume pending %s\n' "$CYAN" "$RESET" "$pending_text"
             fi
-        else
-            printf '  %br.%b Stock-boot recovery\n' "$CYAN" "$RESET"
         fi
         printf '  %bu.%b Uninstall toolkit\n' "$CYAN" "$RESET"
         printf '  %bq.%b Quit\n\n' "$CYAN" "$RESET"
@@ -1729,7 +1844,8 @@ interactive_main() {
             3) manage_menu; draw_home_dashboard ;;
             4) ( install_dependencies full ) || true; pause_for_user; draw_home_dashboard ;;
             5) advanced_menu; draw_home_dashboard ;;
-            r|R) ( recovery_menu_action ) || true; pause_for_user; draw_home_dashboard ;;
+            r|R) stock_recovery_menu; draw_home_dashboard ;;
+            p|P) ( pending_workflow_action ) || true; pause_for_user; draw_home_dashboard ;;
             u|U) ( uninstall_toolkit ) && return 0; pause_for_user; draw_home_dashboard ;;
             q|Q|'') return 0 ;;
             *) warn "Invalid selection." ;;
@@ -1769,6 +1885,7 @@ Global options:
 
 Global options may appear before or after the command.
 The normal CachyOS Limine entry is never replaced or made non-default.
+In the dashboard, r always opens Stock boot and recovery; p handles a pending workflow.
 EOF
 }
 
@@ -1894,4 +2011,6 @@ main() {
 }
 
 trap 'printf "\n" >&2' INT
-main "$@"
+if [[ "${OMEN_ACPI_SOURCE_ONLY:-0}" != "1" ]]; then
+    main "$@"
+fi

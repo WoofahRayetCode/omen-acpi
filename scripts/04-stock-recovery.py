@@ -493,12 +493,88 @@ def remove() -> None:
 
 
 def status() -> None:
+    def emit(key: str, value: object) -> None:
+        print(f"{key}\t{str(value).replace(chr(9), ' ').replace(chr(10), ' ')}")
+
+    boot = "unavailable"
+    revision = "unavailable"
+    detection = "the current ACPI state could not be verified"
     try:
-        data = snapshot()
-        print(f"VALID\t{data['created_utc']}\t{data['source_entry']}")
+        current = probe()
+        boot = current.get("STATE", "unavailable")
+        if current.get("CLEAN") != "1" and boot not in ("unknown", "unavailable"):
+            boot = "modified"
+        revision = current.get("DSDT_REVISION", "unavailable")
+        detection = current.get("REASON", current.get("DETECTION", "no detection reason was reported"))
     except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
-        print(f"UNAVAILABLE\t{error}")
-        raise
+        detection = str(error)
+
+    snapshot_state = normal_state = recovery_state = "unavailable"
+    data = None
+    normal = None
+    text = ""
+    try:
+        machine()
+        esp = esp_path()
+        text = (esp / "limine.conf").read_text(encoding="utf-8", errors="strict")
+        try:
+            normal = normal_entry(text, required=False)
+            normal_state = "available" if normal is not None else "missing"
+        except Failure:
+            normal_state = "ambiguous"
+
+        if not STATE().exists() and not STATE().is_symlink():
+            snapshot_state = "missing"
+        else:
+            try:
+                data = snapshot()
+                snapshot_state = "valid"
+                if normal is not None:
+                    kernel_value, _command, modules = boot_fields(normal)
+                    sources = [limine_local(kernel_value, esp)[0], *[limine_local(item, esp)[0] for item in modules]]
+                    stored = data["payloads"]
+                    if len(sources) != len(stored) or any(sha(source) != item["sha256"] for source, item in zip(sources, stored)):
+                        snapshot_state = "stale"
+            except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError):
+                snapshot_state = "modified"
+
+        reserved = [item for item in entries(text) if item["title"] == ENTRY]
+        if not reserved and BEGIN not in text and END not in text:
+            recovery_state = "missing"
+        elif len(reserved) != 1 or text.count(BEGIN) != 1 or text.count(END) != 1 or data is None:
+            recovery_state = "modified"
+        else:
+            recovery_state = "available" if text.count(owned_block(data)) == 1 else "modified"
+    except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError):
+        pass
+
+    if boot == "stock" and snapshot_state == "missing":
+        recommendation = "Choose option 1 to create the preventive snapshot."
+    elif boot == "stock" and snapshot_state == "valid":
+        recommendation = "A valid snapshot is available; refreshing it is optional."
+    elif boot in ("s5", "combined") and normal_state == "available":
+        recommendation = "Choose option 2 to reboot using the normal stock entry."
+    elif boot in ("s5", "combined") and normal_state == "missing" and snapshot_state in ("valid", "stale"):
+        recommendation = "Choose option 2 to create the managed recovery entry after confirmation."
+    elif normal_state == "missing" and snapshot_state == "missing":
+        recommendation = "Automatic recovery is impossible; use external manual recovery media."
+    elif boot in ("modified", "unknown", "unavailable") or normal_state in ("ambiguous", "unavailable") or snapshot_state == "modified":
+        recommendation = "No automatic change is safe while recovery state is ambiguous or unverifiable."
+    else:
+        recommendation = "Review the detailed status before choosing an action."
+
+    emit("BOOT", boot)
+    emit("DSDT_REVISION", revision)
+    emit("DETECTION", detection)
+    emit("SNAPSHOT", snapshot_state)
+    emit("SNAPSHOT_CREATED", data["created_utc"] if data else "unavailable")
+    emit("SNAPSHOT_VERSION", data["toolkit_version"] if data else "unavailable")
+    emit("KERNEL", f"{data['kernel_version']} ({data['original_kernel_path']})" if data else "unavailable")
+    emit("MODULES", len(data["original_module_paths"]) if data else 0)
+    emit("HASHES", "verified" if data and snapshot_state in ("valid", "stale") else "unavailable")
+    emit("NORMAL_ENTRY", normal_state)
+    emit("RECOVERY_ENTRY", recovery_state)
+    emit("RECOMMENDATION", recommendation)
 
 
 def main() -> int:
@@ -507,6 +583,9 @@ def main() -> int:
     arguments = parser.parse_args()
     if not os.environ.get("OMEN_ACPI_TEST_ROOT") and os.geteuid() != 0:
         raise Failure("stock recovery manager must run as root")
+    if arguments.action == "status":
+        status()
+        return 0
     lock = acquire_lock()
     try:
         globals()[arguments.action]()

@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -213,6 +215,49 @@ class RecoveryTest(unittest.TestCase):
         no_normal = self.original[:self.original.index("/Linux-CachyOS")] + "/zz-omen-acpi-s5-test\n protocol: linux\n kernel_path: boot():/x\n module_path: boot():/y\n"
         config.write_text(no_normal)
         with self.assertRaises(recovery.Failure): recovery.remove()
+
+    def test_detailed_status_is_read_only_and_reports_required_fields(self):
+        self.prepare()
+        before_config = (self.esp / "limine.conf").read_bytes()
+        before_manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        lock = self.root / "run/omen-acpi-fix/manager.lock"
+        if lock.exists():
+            lock.unlink()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            recovery.status()
+        report = output.getvalue()
+        for field in ("BOOT\tstock", "DSDT_REVISION\t", "DETECTION\t", "SNAPSHOT\tvalid",
+                      "SNAPSHOT_CREATED\t", "SNAPSHOT_VERSION\t2.1.10", "KERNEL\t",
+                      "MODULES\t2", "HASHES\tverified", "NORMAL_ENTRY\tavailable",
+                      "RECOVERY_ENTRY\tmissing", "RECOMMENDATION\t"):
+            self.assertIn(field, report)
+        self.assertEqual((self.esp / "limine.conf").read_bytes(), before_config)
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), before_manifest)
+        self.assertFalse(lock.exists())
+
+    def test_status_contexts_are_fail_closed(self):
+        config = self.esp / "limine.conf"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            recovery.status()
+        self.assertIn("SNAPSHOT\tmissing", output.getvalue())
+
+        self.prepare()
+        config.write_text(self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            recovery.status()
+        self.assertIn("NORMAL_ENTRY\tmissing", output.getvalue())
+        self.assertIn("SNAPSHOT\tvalid", output.getvalue())
+
+        config.write_text(self.original + self.original[self.original.index("/Linux-CachyOS"):self.original.index("/User rescue")])
+        before = config.read_bytes()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            recovery.status()
+        self.assertIn("NORMAL_ENTRY\tambiguous", output.getvalue())
+        self.assertEqual(config.read_bytes(), before)
 
 
 if __name__ == "__main__":

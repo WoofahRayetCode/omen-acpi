@@ -289,9 +289,10 @@ PY
 printf 'frontend state checks...\n'
 mkdir -p "$work/frontend"
 ln -s "$ROOT/scripts" "$work/frontend/scripts"
-sed '$d' "$ROOT/omen-acpi" > "$work/frontend/omen-acpi"
+cp "$ROOT/omen-acpi" "$work/frontend/omen-acpi"
 (
     export OMEN_ACPI_TESTING=1
+    export OMEN_ACPI_SOURCE_ONLY=1
     export HOME="$work/frontend-home"
     export XDG_DATA_HOME="$HOME/data"
     export XDG_STATE_HOME="$HOME/state"
@@ -940,5 +941,8 @@ python3 "$ROOT/tests/test_transform.py"
 
 printf 'stock recovery checks...\n'
 python3 "$ROOT/tests/test_stock_recovery.py"
+
+printf 'interactive menu checks...\n'
+bash "$ROOT/tests/test_interactive_menus.sh"
 
 printf 'all tests: PASS\n'
