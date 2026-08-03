@@ -48,6 +48,19 @@
   external recovery media.
 - Pre-uninstall checks now detect the reserved recovery payload on the ESP even
   when its `/var/lib` state is absent, and never delete such an orphan.
+- Snapshot copies are now cryptographically bound to the initially validated
+  source identities and hashes. The actual staged initramfs bytes are inspected
+  with `lsinitcpio`, checked against managed variants and revalidated with the
+  complete normal configuration before activation.
+- Prepare, recover and remove reload the same owned or trusted snapshot at each
+  mutation boundary. Transaction destinations use atomic no-replace renames;
+  state that appears or changes during staging is preserved and blocks commit.
+- A missing snapshot is recommended for creation only when both the active boot
+  and the fully validated normal source are suitable. Missing, ambiguous or
+  unusable normal entries now receive fail-closed restoration guidance.
+- Replaced the repository-only 2.1.11 manual-validation document with the
+  explicitly unexecuted `docs/validation-plan-v2.1.11.md`; the obsolete 2.1.10
+  plan remains available from its historical tag but is no longer on `main`.
 - Hardware checks remain restricted to the documented reference configuration.
   Broader hardware support remains future design work and is not available.
 

@@ -10,7 +10,9 @@ invocations deliberately have no option for selecting arbitrary paths.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -85,6 +87,13 @@ def secure_dir(path: Path, *, mode: int = 0o700) -> None:
         raise Failure(f"unsafe mode for {path}: {stat.S_IMODE(info.st_mode):04o}")
 
 
+def directory_identity(path: Path, *, mode: int = 0o700) -> tuple[int, ...]:
+    secure_dir(path, mode=mode)
+    info = path.lstat()
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns, stat.S_IMODE(info.st_mode))
+
+
 def fsync_file(path: Path) -> None:
     with path.open("rb", buffering=0) as stream:
         os.fsync(stream.fileno())
@@ -110,6 +119,28 @@ def cleanup_file(path: Path, point: str) -> None:
             os.environ.get("OMEN_ACPI_TEST_FAIL_CLEANUP") == point):
         raise OSError(f"simulated cleanup failure at {point}")
     path.unlink()
+
+
+def require_absent(*paths: Path) -> None:
+    for path in paths:
+        if path_present(path):
+            raise Failure(f"transaction destination already exists: {path}")
+
+
+def rename_noreplace(source: Path, target: Path) -> None:
+    """Atomically rename without ever replacing an existing directory entry."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise Failure("renameat2(RENAME_NOREPLACE) is unavailable")
+    renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                          ctypes.c_char_p, ctypes.c_uint)
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            raise Failure(f"transaction destination appeared concurrently: {target}")
+        raise OSError(error_number, os.strerror(error_number), str(source), str(target))
 
 
 def acquire_lock():
@@ -279,18 +310,29 @@ def probe() -> dict[str, str]:
     return values
 
 
-def copy_stable(source: Path, target: Path) -> str:
+def copy_stable(source: Path, target: Path,
+                expected: tuple[tuple[int, int, int, int, int, int], str]) -> str:
     before = regular(source)
+    before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+                       before.st_ctime_ns, stat.S_IMODE(before.st_mode))
+    if before_identity != expected[0]:
+        raise Failure(f"source identity changed after validation: {source}")
     with source.open("rb", buffering=0) as incoming, target.open("xb", buffering=0) as outgoing:
         shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
         outgoing.flush()
         os.fsync(outgoing.fileno())
     after = regular(source)
-    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                      after.st_ctime_ns, stat.S_IMODE(after.st_mode))
+    if before_identity != after_identity:
         raise Failure(f"source changed during copy: {source}")
-    if sha(source) != sha(target):
+    source_digest = sha(source)
+    target_digest = sha(target)
+    if source_digest != expected[1]:
+        raise Failure(f"source digest changed after validation: {source}")
+    if target_digest != expected[1]:
         raise Failure(f"copy verification failed: {source}")
-    return sha(target)
+    return target_digest
 
 
 def file_identity(path: Path, expected: bytes | None = None) -> tuple[int, int, int, int, int, int]:
@@ -376,8 +418,10 @@ def validate_normal_source(text: str, esp: Path) -> dict:
         if before != after:
             raise Failure(f"source changed during validation: {local}")
         fingerprints.append((canonical, *before))
+    normalized = (source["title"], kernel_canonical,
+                  tuple(item[1] for item in module_pairs), command)
     return {"entry": source, "kernel": kernel, "kernel_canonical": kernel_canonical,
-            "command": command, "modules": module_pairs,
+            "command": command, "modules": module_pairs, "normalized": normalized,
             "fingerprints": tuple(fingerprints)}
 
 
@@ -414,9 +458,10 @@ def restore_config_if_unchanged(config: Path, backup: Path, installed: bytes) ->
     return True
 
 
-def load_owned_snapshot(esp: Path | None = None) -> dict:
+def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = None,
+                        payload_path: Path | None = None) -> dict:
     """Verify managed ownership, schema and integrity, but not boot trust."""
-    state = STATE()
+    state = state_path if state_path is not None else STATE()
     secure_dir(state)
     manifest_path = state / "manifest.json"
     if {item.name for item in state.iterdir()} != {"manifest.json"}:
@@ -435,9 +480,12 @@ def load_owned_snapshot(esp: Path | None = None) -> dict:
         raise Failure("recovery manifest schema or provenance is invalid")
     if tuple(data["machine"][key] for key in ("product", "board", "bios")) != EXPECTED:
         raise Failure("recovery snapshot belongs to a different machine or BIOS")
-    payload_root, canonical = limine_local(data["payload_root"], esp if esp is not None else esp_path())
-    if canonical != data["payload_root"] or payload_root.name != "omen-acpi-stock-recovery":
+    canonical_payload, canonical = limine_local(
+        data["payload_root"], esp if esp is not None else esp_path()
+    )
+    if canonical != data["payload_root"] or canonical_payload.name != "omen-acpi-stock-recovery":
         raise Failure("invalid recovery payload root")
+    payload_root = payload_path if payload_path is not None else canonical_payload
     secure_dir(payload_root)
     expected_names = {item["name"] for item in data["payloads"]}
     actual_names = {item.name for item in payload_root.iterdir()}
@@ -456,6 +504,28 @@ def load_owned_snapshot(esp: Path | None = None) -> dict:
     return data
 
 
+def load_owned_snapshot_record(esp: Path, *, state_path: Path | None = None,
+                               payload_path: Path | None = None) -> tuple[dict, tuple]:
+    """Load twice and bind an owned snapshot to exact directory/file identities."""
+    state = state_path if state_path is not None else STATE()
+    payload = payload_path if payload_path is not None else esp / "omen-acpi-stock-recovery"
+    first = load_owned_snapshot(esp, state_path=state, payload_path=payload)
+
+    def fingerprint(data: dict) -> tuple:
+        components = [("manifest.json", *stable_fingerprint(state / "manifest.json"))]
+        for item in sorted(data["payloads"], key=lambda entry: entry["name"]):
+            components.append((item["name"], *stable_fingerprint(payload / item["name"])))
+        return (data["snapshot_id"], directory_identity(state), directory_identity(payload),
+                tuple(components))
+
+    first_fingerprint = fingerprint(first)
+    second = load_owned_snapshot(esp, state_path=state, payload_path=payload)
+    second_fingerprint = fingerprint(second)
+    if first["snapshot_id"] != second["snapshot_id"] or first_fingerprint != second_fingerprint:
+        raise Failure("recovery snapshot changed while ownership was verified")
+    return second, second_fingerprint
+
+
 def load_trusted_snapshot(esp: Path | None = None) -> dict:
     """Return only snapshots created with the content checks in 2.1.11."""
     data = load_owned_snapshot(esp)
@@ -465,6 +535,16 @@ def load_trusted_snapshot(esp: Path | None = None) -> dict:
             "but untrusted for boot; refresh it from a clean stock boot"
         )
     return data
+
+
+def load_trusted_snapshot_record(esp: Path) -> tuple[dict, tuple]:
+    data, fingerprint = load_owned_snapshot_record(esp)
+    if data["toolkit_version"] not in TRUSTED_SNAPSHOT_VERSIONS:
+        raise Failure(
+            "the recovery snapshot was created by 2.1.10 and is integrity-checked "
+            "but untrusted for boot; refresh it from a clean stock boot"
+        )
+    return data, fingerprint
 
 
 def existing_owned_snapshot(esp: Path) -> dict | None:
@@ -480,6 +560,25 @@ def existing_owned_snapshot(esp: Path) -> dict | None:
             "recovery payload and manifest state are incomplete; manual inspection is required"
         )
     return load_owned_snapshot(esp)
+
+
+def existing_owned_snapshot_record(esp: Path) -> tuple[dict, tuple] | None:
+    """Return the exact verified pair, or require both reserved paths absent."""
+    existing = existing_owned_snapshot(esp)
+    if existing is None:
+        return None
+    return load_owned_snapshot_record(esp)
+
+
+def require_same_owned_snapshot(esp: Path, initial: tuple[dict, tuple] | None) -> None:
+    current = existing_owned_snapshot_record(esp)
+    if initial is None:
+        if current is not None:
+            raise Failure("recovery state appeared during snapshot staging")
+        return
+    if current is None or current[0]["snapshot_id"] != initial[0]["snapshot_id"] \
+            or current[1] != initial[1]:
+        raise Failure("managed recovery snapshot changed during the transaction")
 
 
 def prepare() -> None:
@@ -498,21 +597,42 @@ def prepare() -> None:
     command = source_data["command"]
     module_pairs = source_data["modules"]
     payload = esp / "omen-acpi-stock-recovery"
-    existing_owned_snapshot(esp)  # prove both old components before replacement
-    payload_stage = Path(tempfile.mkdtemp(prefix=".omen-acpi-stock-recovery.", dir=esp))
+    initial_snapshot = existing_owned_snapshot_record(esp)
     state_dir = STATE()
     state_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    state_stage = Path(tempfile.mkdtemp(prefix=".omen-acpi-stock-recovery.", dir=state_dir.parent))
-    os.chmod(payload_stage, 0o700); os.chmod(state_stage, 0o700)
     old_payload = esp / f".omen-acpi-stock-recovery.old.{os.getpid()}"
     old_state = state_dir.parent / f".omen-acpi-stock-recovery.old.{os.getpid()}"
+    require_absent(old_payload, old_state)
+    payload_stage = Path(tempfile.mkdtemp(prefix=".omen-acpi-stock-recovery.", dir=esp))
+    state_stage = Path(tempfile.mkdtemp(prefix=".omen-acpi-stock-recovery.", dir=state_dir.parent))
+    os.chmod(payload_stage, 0o700); os.chmod(state_stage, 0o700)
     activated_payload = activated_state = False
     try:
         payloads = []
-        sources = [(kernel, "kernel.bin"), *[(item[0], f"module-{index:03}.bin") for index, item in enumerate(module_pairs)]]
-        for source_path, name in sources:
-            digest = copy_stable(source_path, payload_stage / name)
-            payloads.append({"name": name, "sha256": digest, "size": (payload_stage / name).stat().st_size})
+        staged_fingerprints = {}
+        validated_fingerprints = {
+            item[0]: (item[1], item[2]) for item in source_data["fingerprints"]
+        }
+        sources = [(kernel, kernel_canonical, "kernel.bin", False), *[
+            (item[0], item[1], f"module-{index:03}.bin", True)
+            for index, item in enumerate(module_pairs)
+        ]]
+        for source_path, canonical, name, is_module in sources:
+            target = payload_stage / name
+            expected = validated_fingerprints[canonical]
+            digest = copy_stable(source_path, target, expected)
+            if is_module:
+                inspect_source_initramfs(target, managed_initramfs_hashes())
+            staged = stable_fingerprint(target)
+            if staged[1] != expected[1]:
+                raise Failure(f"staged payload differs from validated source: {name}")
+            staged_fingerprints[name] = staged
+            payloads.append({"name": name, "sha256": digest, "size": staged[0][2]})
+
+        final_source = validate_normal_source(text, esp)
+        if (final_source["normalized"] != source_data["normalized"]
+                or final_source["fingerprints"] != source_data["fingerprints"]):
+            raise Failure("normal source changed after snapshot payloads were copied")
         normalized = {"protocol": "linux", "kernel_path": kernel_canonical,
                       "module_paths": [item[1] for item in module_pairs], "cmdline": command}
         data = {"schema": SCHEMA, "toolkit_version": VERSION,
@@ -529,22 +649,41 @@ def prepare() -> None:
         manifest = state_stage / "manifest.json"
         manifest.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.chmod(manifest, 0o600); fsync_file(manifest); fsync_dir(payload_stage); fsync_dir(state_stage)
-        if regular(config).st_mtime_ns != config_before.st_mtime_ns or sha(config) != hashlib.sha256(text.encode()).hexdigest():
+        manifest_fingerprint = stable_fingerprint(manifest)
+
+        if file_identity(config, text.encode("utf-8")) != (
+                config_before.st_dev, config_before.st_ino, config_before.st_size,
+                config_before.st_mtime_ns, config_before.st_ctime_ns,
+                stat.S_IMODE(config_before.st_mode)):
             raise Failure("Limine configuration changed during snapshot preparation")
-        if payload.exists(): payload.rename(old_payload)
-        payload_stage.rename(payload); activated_payload = True; fsync_dir(esp)
+        if {item.name for item in payload_stage.iterdir()} != set(staged_fingerprints):
+            raise Failure("staged recovery payload contains unexpected files")
+        for name, expected in staged_fingerprints.items():
+            if stable_fingerprint(payload_stage / name) != expected:
+                raise Failure(f"staged recovery payload changed before activation: {name}")
+        if {item.name for item in state_stage.iterdir()} != {"manifest.json"} \
+                or stable_fingerprint(manifest) != manifest_fingerprint:
+            raise Failure("staged recovery manifest changed before activation")
+        directory_identity(payload_stage); directory_identity(state_stage)
+        require_absent(old_payload, old_state)
+        require_same_owned_snapshot(esp, initial_snapshot)
+
+        if initial_snapshot is not None:
+            rename_noreplace(payload, old_payload)
+        rename_noreplace(payload_stage, payload); activated_payload = True; fsync_dir(esp)
         if os.environ.get("OMEN_ACPI_TEST_FAIL_AFTER_PAYLOAD") == "1":
             raise Failure("simulated interruption after payload activation")
-        if state_dir.exists(): state_dir.rename(old_state)
-        state_stage.rename(state_dir); activated_state = True; fsync_dir(state_dir.parent)
-        load_owned_snapshot(esp)
+        if initial_snapshot is not None:
+            rename_noreplace(state_dir, old_state)
+        rename_noreplace(state_stage, state_dir); activated_state = True; fsync_dir(state_dir.parent)
+        load_owned_snapshot_record(esp)
         # The new pair is committed here. Cleanup is non-essential and must
         # never roll it back after either old component has been deleted.
         activated_payload = activated_state = False
         cleanup_failures = []
         for old, point in ((old_payload, "prepare-old-payload"),
                            (old_state, "prepare-old-state")):
-            if old.exists():
+            if path_present(old):
                 try:
                     cleanup_tree(old, point)
                 except OSError as error:
@@ -553,14 +692,16 @@ def prepare() -> None:
             print(f"WARNING: committed snapshot preserved; old backup cleanup failed: {failure}", file=sys.stderr)
         print(f"Stock recovery snapshot prepared from {source['title']!r}.")
     except Exception:
-        if activated_state and state_dir.exists(): shutil.rmtree(state_dir)
-        if old_state.exists(): old_state.rename(state_dir)
-        if activated_payload and payload.exists(): shutil.rmtree(payload)
-        if old_payload.exists(): old_payload.rename(payload)
+        if activated_state and path_present(state_dir): shutil.rmtree(state_dir)
+        if path_present(old_state) and not path_present(state_dir):
+            rename_noreplace(old_state, state_dir)
+        if activated_payload and path_present(payload): shutil.rmtree(payload)
+        if path_present(old_payload) and not path_present(payload):
+            rename_noreplace(old_payload, payload)
         raise
     finally:
-        if payload_stage.exists(): shutil.rmtree(payload_stage)
-        if state_stage.exists(): shutil.rmtree(state_stage)
+        if path_present(payload_stage): shutil.rmtree(payload_stage)
+        if path_present(state_stage): shutil.rmtree(state_stage)
 
 
 def owned_block(data: dict) -> str:
@@ -584,7 +725,8 @@ def recover() -> None:
         source_data = validate_normal_source(text, esp)
         print(f"NORMAL\t{source_data['entry']['title']}")
         return
-    data = load_trusted_snapshot(esp)
+    initial_snapshot = load_trusted_snapshot_record(esp)
+    data = initial_snapshot[0]
     parsed = entries(text)
     reserved = [item for item in parsed if item["title"] == ENTRY]
     if len(reserved) > 1:
@@ -599,6 +741,7 @@ def recover() -> None:
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
     stage = config.with_name(f".{config.name}.omen-recovery.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-recovery-backup.{os.getpid()}")
+    require_absent(stage, backup)
     config_replaced = False
     try:
         stage.write_text(new_text, encoding="utf-8"); os.chmod(stage, before_identity[-1]); fsync_file(stage)
@@ -608,6 +751,10 @@ def recover() -> None:
         file_identity(backup, original_bytes)
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed during recovery backup")
+        confirmed_snapshot = load_trusted_snapshot_record(esp)
+        if confirmed_snapshot[0]["snapshot_id"] != data["snapshot_id"] \
+                or confirmed_snapshot[1] != initial_snapshot[1]:
+            raise Failure("trusted recovery snapshot changed before configuration commit")
         os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
         file_identity(config, new_text.encode("utf-8"))
         if os.environ.get("OMEN_ACPI_TEST_FAIL_REGENERATE") == "1":
@@ -649,9 +796,10 @@ def remove() -> None:
             "recovery removal requires one valid normal linux-cachyos entry; "
             "restore a verifiable stock entry before removing the snapshot"
         ) from error
-    data = existing_owned_snapshot(esp)
-    if data is None:
+    initial_snapshot = existing_owned_snapshot_record(esp)
+    if initial_snapshot is None:
         raise Failure("managed recovery snapshot is missing")
+    data = initial_snapshot[0]
     block = owned_block(data)
     reserved = [item for item in entries(text) if item["title"] == ENTRY]
     if len(reserved) > 1 or text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
@@ -669,6 +817,7 @@ def remove() -> None:
     payload, _ = limine_local(data["payload_root"], esp)
     detached_payload = payload.with_name(f".{payload.name}.removed.{os.getpid()}")
     detached_state = STATE().with_name(f".{STATE().name}.removed.{os.getpid()}")
+    require_absent(stage, backup, detached_payload, detached_state)
     config_replaced = False
     removal_committed = False
     try:
@@ -682,10 +831,21 @@ def remove() -> None:
             raise Failure("normal CachyOS payloads changed before removal commit")
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed before removal commit")
+        require_same_owned_snapshot(esp, initial_snapshot)
         os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
         file_identity(config, new_text.encode("utf-8"))
-        payload.rename(detached_payload); STATE().rename(detached_state)
-        if payload.exists() or STATE().exists():
+        require_same_owned_snapshot(esp, initial_snapshot)
+        require_absent(detached_payload, detached_state)
+        rename_noreplace(payload, detached_payload)
+        rename_noreplace(STATE(), detached_state)
+        detached_snapshot = load_owned_snapshot_record(
+            esp, state_path=detached_state, payload_path=detached_payload
+        )
+        if detached_snapshot[0]["snapshot_id"] != data["snapshot_id"] \
+                or detached_snapshot[1][0] != initial_snapshot[1][0] \
+                or detached_snapshot[1][3] != initial_snapshot[1][3]:
+            raise Failure("detached recovery snapshot differs from verified ownership")
+        if path_present(payload) or path_present(STATE()):
             raise Failure("managed recovery state did not detach completely")
         verified = config.read_bytes()
         if verified != new_text.encode("utf-8"):
@@ -698,12 +858,26 @@ def remove() -> None:
         # hidden and explicitly reported if non-essential cleanup fails.
         removal_committed = True
         cleanup_failures = []
-        for old, point in ((detached_payload, "remove-detached-payload"),
-                           (detached_state, "remove-detached-state")):
-            try:
-                cleanup_tree(old, point)
-            except OSError as error:
-                cleanup_failures.append(f"{old}: {error}")
+        cleanup_safe = True
+        try:
+            cleanup_snapshot = load_owned_snapshot_record(
+                esp, state_path=detached_state, payload_path=detached_payload
+            )
+            if cleanup_snapshot[0]["snapshot_id"] != data["snapshot_id"] \
+                    or cleanup_snapshot[1][3] != detached_snapshot[1][3]:
+                raise Failure("detached recovery state changed before cleanup")
+        except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
+            cleanup_safe = False
+            cleanup_failures.append(
+                f"{detached_payload} and {detached_state}: cleanup skipped: {error}"
+            )
+        if cleanup_safe:
+            for old, point in ((detached_payload, "remove-detached-payload"),
+                               (detached_state, "remove-detached-state")):
+                try:
+                    cleanup_tree(old, point)
+                except OSError as error:
+                    cleanup_failures.append(f"{old}: {error}")
         try:
             cleanup_file(backup, "remove-config-backup")
         except OSError as error:
@@ -712,8 +886,10 @@ def remove() -> None:
             print(f"WARNING: removal committed; detached cleanup failed: {failure}", file=sys.stderr)
         print("Stock recovery entry, payloads and state removed.")
     except Exception:
-        if detached_state.exists() and not STATE().exists(): detached_state.rename(STATE())
-        if detached_payload.exists() and not payload.exists(): detached_payload.rename(payload)
+        if path_present(detached_state) and not path_present(STATE()):
+            rename_noreplace(detached_state, STATE())
+        if path_present(detached_payload) and not path_present(payload):
+            rename_noreplace(detached_payload, payload)
         if config_replaced and backup.exists():
             restore_config_if_unchanged(config, backup, new_text.encode("utf-8"))
         raise
@@ -801,8 +977,13 @@ def status() -> None:
     except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError):
         pass
 
-    if boot == "stock" and snapshot_state == "missing":
+    if boot == "stock" and snapshot_state == "missing" and normal_state == "available":
         recommendation = "Choose option 1 to create the preventive snapshot."
+    elif boot == "stock" and snapshot_state == "missing":
+        recommendation = (
+            "Restore and verify one usable normal stock entry before creating a snapshot; "
+            "no automatic change is safe."
+        )
     elif boot == "stock" and snapshot_state == "valid":
         recommendation = "A valid snapshot is available; refreshing it is optional."
     elif boot == "stock" and snapshot_state == "refresh-required" and normal_state == "available":

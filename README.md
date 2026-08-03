@@ -320,9 +320,14 @@ variant/composite initramfs and files that change while copied. Every initramfs
 is inspected with `lsinitcpio`; content under `kernel/firmware/acpi/` and hashes
 of managed variant initramfs are rejected regardless of the source filename.
 Staging and `fsync` occur on the destination filesystems and activation uses
-atomic renames. The complete new payload/manifest pair is committed before old
-backup cleanup; a cleanup failure keeps the valid new snapshot and reports the
-safely named residue. Guided setup and every variant installation prepare the
+atomic no-replace renames. Every staged initramfs is inspected directly, each
+staged digest is bound to the initially validated source identity and digest,
+and the complete normal source plus normalized configuration is revalidated
+before activation. The existing payload/manifest pair is also reloaded and
+must retain the same snapshot identity immediately before any rename. The
+complete new pair is committed before old backup cleanup; a cleanup failure
+keeps the valid new snapshot and reports the safely named residue. Guided setup
+and every variant installation prepare the
 snapshot only after the requested variant schema is known to be absent; an
 installed, legacy or conflicting variant cannot refresh it.
 
@@ -353,6 +358,18 @@ never silently overwritten. The toolkit lock serializes its own operations;
 programs that do not honor that advisory lock can still race after the final
 check, so post-replacement byte verification remains fail-closed and preserves
 foreign bytes rather than rolling them back.
+
+Recovery-entry creation reloads the same trusted snapshot immediately before
+committing `limine.conf`. Removal similarly binds the initial owned snapshot,
+rechecks the exact payload/manifest pair before and after configuration
+replacement, and uses no-replace detached destinations. A changed component,
+new foreign file or occupied rollback path aborts without deleting the object
+that appeared concurrently.
+
+Status recommends option 1 only for a clean stock boot with no snapshot and a
+fully usable normal entry. A missing, ambiguous, unusable or unverifiable
+normal source must be restored and verified first; no automatic preparation is
+recommended in those states.
 
 Snapshots created by toolkit 2.1.10 are ownership- and integrity-checked only
 so that toolkit-owned files can be refreshed or removed safely. They are shown

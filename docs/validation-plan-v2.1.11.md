@@ -53,3 +53,17 @@ documented HP OMEN MAX 16-ap0006sl reference machine, with board `8E35`, BIOS
     recovery option 2 and confirm it reaches the explicit normal-stock reboot
     prompt without creating a recovery entry. Repeat with missing, ambiguous
     and unusable entries and confirm external media is required.
+16. During snapshot refresh, replace the normal kernel and each initramfs in
+    turn after initial validation, after its staged copy and before activation.
+    Confirm staged initramfs inspection, source fingerprints and the final
+    normalized-source comparison reject every mixed-generation snapshot while
+    preserving the previous payload/manifest pair byte-for-byte.
+17. Inject new files, valid and broken symlinks and changed payloads into the
+    owned snapshot immediately before prepare and remove mutation boundaries.
+    Occupy every `.old` and `.removed` destination. Confirm no-replace renames
+    preserve the foreign objects, `limine.conf` rolls back exactly and no
+    toolkit staging path remains.
+18. Remove the normal entry from an expendable configuration, then modify the
+    trusted snapshot after recovery-entry staging but before configuration
+    commit. Confirm the entry is not created, the external snapshot change is
+    preserved and the original `limine.conf` bytes are restored.
