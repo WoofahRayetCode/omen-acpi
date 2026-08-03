@@ -44,11 +44,11 @@ SETUP_VARIANT_RESULT=sentinel; choose_setup_variant <<<'x
 [[ "$SETUP_VARIANT_RESULT" == combined ]] || fail "invalid input did not reprompt"
 [[ "$(grep -c 'Choose the experimental setup:' <<<"$invalid_output")" -eq 2 ]] || fail "invalid input did not redraw menu"
 
-if rg -n 'requested="\$\(choose_setup_variant\)"' "$ROOT/omen-acpi" >/dev/null; then
+if grep -Fn 'requested="$(choose_setup_variant)"' "$ROOT/omen-acpi" >/dev/null; then
     fail "interactive setup function is executed by command substitution"
 fi
-rg -q 'requested="\$SETUP_VARIANT_RESULT"' "$ROOT/omen-acpi" || fail "explicit setup result variable is missing"
-if rg -n 'eval .*SETUP|SETUP.*eval' "$ROOT/omen-acpi" >/dev/null; then fail "setup selection uses eval"; fi
+grep -Fq 'requested="$SETUP_VARIANT_RESULT"' "$ROOT/omen-acpi" || fail "explicit setup result variable is missing"
+if grep -En 'eval .*SETUP|SETUP.*eval' "$ROOT/omen-acpi" >/dev/null; then fail "setup selection uses eval"; fi
 
 confirmation="$work/confirmation"
 confirm() { printf '%s\n' "$1" > "$confirmation"; return 1; }
@@ -97,14 +97,14 @@ b')"
 [[ "$(grep -c 'Stock boot and recovery' <<<"$invalid_menu")" -eq 2 ]] || fail "invalid recovery input did not redraw menu"
 [[ ! -s "$work/menu-actions" ]] || fail "invalid recovery input ran an action"
 
-rg -q "printf '  %br.%b Stock boot and recovery" "$ROOT/omen-acpi" || fail "r is not a stable recovery menu entry"
+grep -Fq "printf '  %br.%b Stock boot and recovery" "$ROOT/omen-acpi" || fail "r is not a stable recovery menu entry"
 grep -Fq 'r|R) stock_recovery_menu' "$ROOT/omen-acpi" || fail "r does not always open the recovery submenu"
 grep -Fq 'p|P) ( pending_workflow_action' "$ROOT/omen-acpi" || fail "pending workflow is not separated as p"
-rg -q 'Reboot into stock to continue pending' "$ROOT/omen-acpi" || fail "pending reboot label is missing"
-rg -q 'Resume pending' "$ROOT/omen-acpi" || fail "pending resume label is missing"
-rg -q 'confirm_dangerous "Create or restore the managed stock recovery entry?' "$ROOT/omen-acpi" \
+grep -Fq 'Reboot into stock to continue pending' "$ROOT/omen-acpi" || fail "pending reboot label is missing"
+grep -Fq 'Resume pending' "$ROOT/omen-acpi" || fail "pending resume label is missing"
+grep -Fq 'confirm_dangerous "Create or restore the managed stock recovery entry?' "$ROOT/omen-acpi" \
     || fail "recovery entry creation lacks confirmation"
-rg -q 'confirm_dangerous "Remove the managed recovery snapshot and entry?' "$ROOT/omen-acpi" \
+grep -Fq 'confirm_dangerous "Remove the managed recovery snapshot and entry?' "$ROOT/omen-acpi" \
     || fail "recovery removal lacks confirmation"
 
 for command in prepare-stock-recovery recover-stock reboot-stock remove-stock-recovery resume; do

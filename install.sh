@@ -226,6 +226,7 @@ release_files=(
     scripts/03-manage-limine-entry.sh
     scripts/04-stock-recovery.py
     tests/run.sh
+    tests/test_interactive_menus.sh
     tests/test_stock_recovery.py
     tests/test_transform.py
     uninstall.sh
