@@ -55,6 +55,16 @@
 - Prepare, recover and remove reload the same owned or trusted snapshot at each
   mutation boundary. Transaction destinations use atomic no-replace renames;
   state that appears or changes during staging is preserved and blocks commit.
+- Recovery-entry creation now rechecks the exact original `limine.conf` bytes
+  immediately after the final trusted-snapshot review, then verifies both the
+  installed configuration and snapshot again before discarding its backup.
+- Recovery removal keeps the normal kernel and every initramfs content-checked
+  across snapshot review, configuration replacement and snapshot detachment.
+  Any source loss or mutation restores owned state and conditionally rolls back
+  only configuration bytes still installed by the transaction.
+- Configuration stage and backup files are created exclusively. Concurrent
+  files, directories and valid or broken symlinks are never truncated,
+  followed, replaced or removed by transaction cleanup.
 - A missing snapshot is recommended for creation only when both the active boot
   and the fully validated normal source are suitable. Missing, ambiguous or
   unusable normal entries now receive fail-closed restoration guidance.

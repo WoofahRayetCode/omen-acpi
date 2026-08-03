@@ -350,6 +350,41 @@ def file_identity(path: Path, expected: bytes | None = None) -> tuple[int, int, 
     return identity
 
 
+def write_exclusive(path: Path, content: bytes, mode: int) -> tuple[int, int, int, int, int, int]:
+    """Create one transaction file without following or replacing any entry."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, mode)
+    except OSError as error:
+        if error.errno in (errno.EEXIST, errno.ELOOP, errno.EISDIR):
+            raise Failure(f"transaction file appeared concurrently: {path}") from error
+        raise
+    created = os.fstat(descriptor)
+    completed = False
+    try:
+        os.fchmod(descriptor, mode)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "short write", str(path))
+            view = view[written:]
+        os.fsync(descriptor)
+        completed = True
+    finally:
+        os.close(descriptor)
+        if not completed:
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+    return file_identity(path, content)
+
+
 def inspect_source_initramfs(path: Path, managed_hashes: set[str]) -> None:
     """Reject ACPI overrides and any payload identical to a managed variant."""
     if sha(path) in managed_hashes:
@@ -425,6 +460,28 @@ def validate_normal_source(text: str, esp: Path) -> dict:
             "fingerprints": tuple(fingerprints)}
 
 
+def require_same_normal_source(text: str, esp: Path, initial: dict) -> dict:
+    """Repeat every content check and require the original normalized source."""
+    current = validate_normal_source(text, esp)
+    if (current["normalized"] != initial["normalized"]
+            or current["fingerprints"] != initial["fingerprints"]):
+        raise Failure("normal CachyOS source changed during the removal transaction")
+    return current
+
+
+def require_normal_source_identities(esp: Path, initial: dict) -> None:
+    """Quick final boundary check of identities already content-validated."""
+    for canonical, expected_identity, _digest in initial["fingerprints"]:
+        path, confirmed = limine_local(canonical, esp)
+        if confirmed != canonical:
+            raise Failure("normal CachyOS path changed after validation")
+        info = regular(path)
+        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                    info.st_ctime_ns, stat.S_IMODE(info.st_mode))
+        if identity != expected_identity:
+            raise Failure(f"normal CachyOS payload changed at commit boundary: {path}")
+
+
 def managed_initramfs_hashes() -> set[str]:
     hashes: set[str] = set()
     for variant in ("s5", "combined"):
@@ -445,8 +502,16 @@ def managed_initramfs_hashes() -> set[str]:
     return hashes
 
 
-def restore_config_if_unchanged(config: Path, backup: Path, installed: bytes) -> bool:
+def restore_config_if_unchanged(config: Path, backup: Path, installed: bytes,
+                                backup_bytes: bytes, backup_identity: tuple) -> bool:
     """Restore only bytes installed by this transaction; preserve foreign edits."""
+    try:
+        if file_identity(backup, backup_bytes) != backup_identity:
+            raise Failure("transaction backup changed before rollback")
+    except Failure as error:
+        print(f"WARNING: Limine rollback backup is no longer owned; rollback skipped: {error}",
+              file=sys.stderr)
+        return False
     try:
         file_identity(config, installed)
     except Failure:
@@ -456,6 +521,18 @@ def restore_config_if_unchanged(config: Path, backup: Path, installed: bytes) ->
     os.replace(backup, config)
     fsync_dir(config.parent)
     return True
+
+
+def cleanup_owned_file(path: Path, identity: tuple | None, point: str | None = None) -> None:
+    """Remove only the exact regular file created by this transaction."""
+    if identity is None or not path_present(path):
+        return
+    if file_identity(path) != identity:
+        raise Failure(f"transaction file changed; cleanup skipped: {path}")
+    if point is None:
+        path.unlink()
+    else:
+        cleanup_file(path, point)
 
 
 def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = None,
@@ -739,37 +816,64 @@ def recover() -> None:
         print(f"READY\t{ENTRY}")
         return
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
+    installed_bytes = new_text.encode("utf-8")
     stage = config.with_name(f".{config.name}.omen-recovery.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-recovery-backup.{os.getpid()}")
     require_absent(stage, backup)
     config_replaced = False
+    stage_identity = backup_identity = None
     try:
-        stage.write_text(new_text, encoding="utf-8"); os.chmod(stage, before_identity[-1]); fsync_file(stage)
+        stage_identity = write_exclusive(stage, installed_bytes, before_identity[-1])
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed during recovery")
-        backup.write_bytes(original_bytes); os.chmod(backup, before_identity[-1]); fsync_file(backup)
-        file_identity(backup, original_bytes)
+        backup_identity = write_exclusive(backup, original_bytes, before_identity[-1])
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed during recovery backup")
         confirmed_snapshot = load_trusted_snapshot_record(esp)
         if confirmed_snapshot[0]["snapshot_id"] != data["snapshot_id"] \
                 or confirmed_snapshot[1] != initial_snapshot[1]:
             raise Failure("trusted recovery snapshot changed before configuration commit")
+        if file_identity(stage, installed_bytes) != stage_identity:
+            raise Failure("recovery configuration staging changed before commit")
+        # This is deliberately the final operation before replace: no snapshot
+        # hashing or other long-running check may follow it.
+        if file_identity(config, original_bytes) != before_identity:
+            raise Failure("Limine configuration changed after snapshot verification")
         os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
-        file_identity(config, new_text.encode("utf-8"))
+        stage_identity = None
+        installed_identity = file_identity(config, installed_bytes)
+        committed_snapshot = load_trusted_snapshot_record(esp)
+        if committed_snapshot[0]["snapshot_id"] != data["snapshot_id"] \
+                or committed_snapshot[1] != initial_snapshot[1]:
+            raise Failure("trusted recovery snapshot changed after configuration replacement")
+        if file_identity(config, installed_bytes) != installed_identity:
+            raise Failure("Limine configuration changed after snapshot commit verification")
         if os.environ.get("OMEN_ACPI_TEST_FAIL_REGENERATE") == "1":
             raise Failure("simulated Limine regeneration failure")
         verify = config.read_bytes()
-        if verify != new_text.encode("utf-8") or verify.decode("utf-8", errors="strict").count(block) != 1:
+        if verify != installed_bytes or verify.decode("utf-8", errors="strict").count(block) != 1:
             raise Failure("post-write recovery entry verification failed")
-        backup.unlink(); print(f"CREATED\t{ENTRY}")
+        try:
+            cleanup_owned_file(backup, backup_identity)
+            backup_identity = None
+        except (Failure, OSError) as error:
+            print(f"WARNING: recovery committed; configuration backup cleanup failed: {error}",
+                  file=sys.stderr)
+        print(f"CREATED\t{ENTRY}")
     except Exception:
-        if config_replaced and backup.exists():
-            restore_config_if_unchanged(config, backup, new_text.encode("utf-8"))
+        if config_replaced and path_present(backup) and backup_identity is not None:
+            restore_config_if_unchanged(
+                config, backup, installed_bytes, original_bytes, backup_identity
+            )
+            backup_identity = None if not path_present(backup) else backup_identity
         raise
     finally:
-        if stage.exists(): stage.unlink()
-        if backup.exists(): backup.unlink()
+        for temporary, identity in ((stage, stage_identity), (backup, backup_identity)):
+            try:
+                cleanup_owned_file(temporary, identity)
+            except (Failure, OSError) as error:
+                print(f"WARNING: foreign or changed transaction file preserved: {error}",
+                      file=sys.stderr)
 
 
 def active() -> None:
@@ -812,6 +916,7 @@ def remove() -> None:
                          "boot():/omen-acpi-stock-recovery" in text):
         raise Failure("foreign recovery ownership marker or payload reference exists")
     new_text = text.replace("\n\n" + block + "\n", "\n").replace(block + "\n", "")
+    installed_bytes = new_text.encode("utf-8")
     stage = config.with_name(f".{config.name}.omen-remove.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-remove-backup.{os.getpid()}")
     payload, _ = limine_local(data["payload_root"], esp)
@@ -820,21 +925,33 @@ def remove() -> None:
     require_absent(stage, backup, detached_payload, detached_state)
     config_replaced = False
     removal_committed = False
+    stage_identity = backup_identity = None
     try:
-        stage.write_text(new_text, encoding="utf-8"); os.chmod(stage, before_identity[-1]); fsync_file(stage)
-        backup.write_bytes(original_bytes); os.chmod(backup, before_identity[-1]); fsync_file(backup)
-        file_identity(backup, original_bytes)
+        stage_identity = write_exclusive(stage, installed_bytes, before_identity[-1])
+        backup_identity = write_exclusive(backup, original_bytes, before_identity[-1])
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed during removal backup")
-        confirmed_source = validate_normal_source(text, esp)
-        if confirmed_source["fingerprints"] != source_data["fingerprints"]:
-            raise Failure("normal CachyOS payloads changed before removal commit")
+        # Full source -> full snapshot -> full source prevents either expensive
+        # verifier from opening a new unchecked boundary before the replace.
+        require_same_normal_source(text, esp, source_data)
+        require_same_owned_snapshot(esp, initial_snapshot)
+        require_same_normal_source(text, esp, source_data)
+        if file_identity(stage, installed_bytes) != stage_identity:
+            raise Failure("removal configuration staging changed before commit")
+        require_normal_source_identities(esp, source_data)
+        # Final immediate configuration check: no long-running work follows.
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed before removal commit")
-        require_same_owned_snapshot(esp, initial_snapshot)
         os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
-        file_identity(config, new_text.encode("utf-8"))
+        stage_identity = None
+        installed_identity = file_identity(config, installed_bytes)
         require_same_owned_snapshot(esp, initial_snapshot)
+        require_same_normal_source(new_text, esp, source_data)
+        if file_identity(config, installed_bytes) != installed_identity:
+            raise Failure("Limine configuration changed after removal verification")
+        require_normal_source_identities(esp, source_data)
+        if file_identity(config, installed_bytes) != installed_identity:
+            raise Failure("Limine configuration changed before recovery detach")
         require_absent(detached_payload, detached_state)
         rename_noreplace(payload, detached_payload)
         rename_noreplace(STATE(), detached_state)
@@ -847,9 +964,15 @@ def remove() -> None:
             raise Failure("detached recovery snapshot differs from verified ownership")
         if path_present(payload) or path_present(STATE()):
             raise Failure("managed recovery state did not detach completely")
-        verified = config.read_bytes()
-        if verified != new_text.encode("utf-8"):
+        require_same_normal_source(new_text, esp, source_data)
+        if file_identity(config, installed_bytes) != installed_identity:
             raise Failure("Limine configuration changed during removal commit")
+        require_normal_source_identities(esp, source_data)
+        if file_identity(config, installed_bytes) != installed_identity:
+            raise Failure("Limine configuration changed at final removal boundary")
+        verified = config.read_bytes()
+        if verified != installed_bytes:
+            raise Failure("Limine configuration bytes changed during removal commit")
         verified_text = verified.decode("utf-8", errors="strict")
         if (ENTRY in verified_text or BEGIN in verified_text or END in verified_text or
                 "boot():/omen-acpi-stock-recovery" in verified_text):
@@ -879,8 +1002,9 @@ def remove() -> None:
                 except OSError as error:
                     cleanup_failures.append(f"{old}: {error}")
         try:
-            cleanup_file(backup, "remove-config-backup")
-        except OSError as error:
+            cleanup_owned_file(backup, backup_identity, "remove-config-backup")
+            backup_identity = None
+        except (Failure, OSError) as error:
             cleanup_failures.append(f"{backup}: {error}")
         for failure in cleanup_failures:
             print(f"WARNING: removal committed; detached cleanup failed: {failure}", file=sys.stderr)
@@ -890,12 +1014,24 @@ def remove() -> None:
             rename_noreplace(detached_state, STATE())
         if path_present(detached_payload) and not path_present(payload):
             rename_noreplace(detached_payload, payload)
-        if config_replaced and backup.exists():
-            restore_config_if_unchanged(config, backup, new_text.encode("utf-8"))
+        if config_replaced and path_present(backup) and backup_identity is not None:
+            restore_config_if_unchanged(
+                config, backup, installed_bytes, original_bytes, backup_identity
+            )
+            backup_identity = None if not path_present(backup) else backup_identity
         raise
     finally:
-        if stage.exists(): stage.unlink()
-        if backup.exists() and not removal_committed: backup.unlink()
+        try:
+            cleanup_owned_file(stage, stage_identity)
+        except (Failure, OSError) as error:
+            print(f"WARNING: foreign or changed transaction file preserved: {error}",
+                  file=sys.stderr)
+        if not removal_committed:
+            try:
+                cleanup_owned_file(backup, backup_identity)
+            except (Failure, OSError) as error:
+                print(f"WARNING: foreign or changed transaction file preserved: {error}",
+                      file=sys.stderr)
 
 
 def status() -> None:

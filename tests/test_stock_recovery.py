@@ -885,6 +885,272 @@ class RecoveryTest(unittest.TestCase):
         self.assertNotIn(recovery.ENTRY, config.read_text())
         self.assert_no_recovery_transaction_residue()
 
+    def test_recover_rechecks_config_after_slow_snapshot_reload(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        without_normal = (self.original[:self.original.index("/Linux-CachyOS")]
+                          + self.original[self.original.index("/User rescue"):])
+        config.write_text(without_normal)
+        manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+        payload_root = self.esp / "omen-acpi-stock-recovery"
+        payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
+        external = without_normal.encode() + b"# external change during snapshot reload\n"
+        original_load = recovery.load_trusted_snapshot_record
+        calls = 0
+
+        def edit_during_second_reload(esp):
+            nonlocal calls
+            calls += 1
+            result = original_load(esp)
+            if calls == 2:
+                config.write_bytes(external)
+            return result
+
+        with mock.patch.object(recovery, "load_trusted_snapshot_record",
+                               side_effect=edit_during_second_reload):
+            with self.assertRaises(recovery.Failure):
+                recovery.recover()
+        self.assertEqual(config.read_bytes(), external)
+        self.assertNotIn(recovery.ENTRY, config.read_text())
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest_before)
+        self.assertEqual({path.name: path.read_bytes() for path in payload_root.iterdir()},
+                         payload_before)
+        self.assert_no_recovery_transaction_residue()
+
+    def test_recover_rolls_back_if_snapshot_changes_after_config_replace(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        without_normal = (self.original[:self.original.index("/Linux-CachyOS")]
+                          + self.original[self.original.index("/User rescue"):])
+        config.write_text(without_normal); config_before = config.read_bytes()
+        manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+        payload_root = self.esp / "omen-acpi-stock-recovery"
+        payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
+        changed_payload = payload_root / "module-001.bin"
+        external_payload = b"external snapshot change after config replace"
+        original_replace = recovery.os.replace
+
+        def replace_then_change_snapshot(source, target):
+            original_replace(source, target)
+            if Path(target) == config:
+                changed_payload.write_bytes(external_payload)
+
+        with mock.patch.object(recovery.os, "replace", side_effect=replace_then_change_snapshot):
+            with self.assertRaises(recovery.Failure):
+                recovery.recover()
+        self.assertEqual(config.read_bytes(), config_before)
+        self.assertNotIn(recovery.ENTRY, config.read_text())
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest_before)
+        self.assertEqual(changed_payload.read_bytes(), external_payload)
+        for name, content in payload_before.items():
+            if name != changed_payload.name:
+                self.assertEqual((payload_root / name).read_bytes(), content)
+        self.assert_no_recovery_transaction_residue()
+
+    def test_remove_rechecks_config_after_slow_snapshot_review(self):
+        data = self.prepare(); config = self.esp / "limine.conf"
+        config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
+        manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+        payload_root = self.esp / "omen-acpi-stock-recovery"
+        payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
+        external = config.read_bytes() + b"# external change during snapshot review\n"
+        original_check = recovery.require_same_owned_snapshot
+        calls = 0
+
+        def edit_during_first_review(esp, initial):
+            nonlocal calls
+            calls += 1
+            result = original_check(esp, initial)
+            if calls == 1:
+                config.write_bytes(external)
+            return result
+
+        with mock.patch.object(recovery, "require_same_owned_snapshot",
+                               side_effect=edit_during_first_review), \
+             mock.patch.object(recovery, "cleanup_tree",
+                               wraps=recovery.cleanup_tree) as cleanup_tree, \
+             mock.patch.object(recovery, "cleanup_file",
+                               wraps=recovery.cleanup_file) as cleanup_file:
+            with self.assertRaises(recovery.Failure):
+                recovery.remove()
+        cleanup_tree.assert_not_called()
+        cleanup_file.assert_not_called()
+        self.assertEqual(config.read_bytes(), external)
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest_before)
+        self.assertEqual({path.name: path.read_bytes() for path in payload_root.iterdir()},
+                         payload_before)
+        self.assert_no_recovery_transaction_residue()
+
+    def test_remove_keeps_normal_source_valid_across_commit_boundaries(self):
+        cases = ("during-snapshot-review", "after-replace", "after-detach")
+        for case in cases:
+            with self.subTest(case=case):
+                data = self.prepare(); config = self.esp / "limine.conf"
+                config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
+                config_before = config.read_bytes()
+                manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+                payload_root = self.esp / "omen-acpi-stock-recovery"
+                payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
+                module = self.esp / "initramfs-linux-cachyos.img"
+
+                if case in ("during-snapshot-review", "after-replace"):
+                    original_check = recovery.require_same_owned_snapshot
+                    calls = 0
+
+                    def change_normal_during_review(esp, initial):
+                        nonlocal calls
+                        calls += 1
+                        result = original_check(esp, initial)
+                        expected_call = 1 if case == "during-snapshot-review" else 2
+                        if calls == expected_call:
+                            if case == "during-snapshot-review":
+                                module.unlink()
+                            else:
+                                module.write_bytes(b"external normal change after replace")
+                        return result
+
+                    patcher = mock.patch.object(
+                        recovery, "require_same_owned_snapshot",
+                        side_effect=change_normal_during_review
+                    )
+                else:
+                    original_load = recovery.load_owned_snapshot_record
+                    injected = False
+
+                    def change_normal_after_detach(esp, *, state_path=None, payload_path=None):
+                        nonlocal injected
+                        result = original_load(esp, state_path=state_path,
+                                               payload_path=payload_path)
+                        if state_path is not None and not injected:
+                            injected = True
+                            module.unlink()
+                        return result
+
+                    patcher = mock.patch.object(
+                        recovery, "load_owned_snapshot_record",
+                        side_effect=change_normal_after_detach
+                    )
+
+                try:
+                    with patcher, \
+                         mock.patch.object(recovery, "cleanup_tree",
+                                           wraps=recovery.cleanup_tree) as cleanup_tree, \
+                         mock.patch.object(recovery, "cleanup_file",
+                                           wraps=recovery.cleanup_file) as cleanup_file:
+                        with self.assertRaises(recovery.Failure):
+                            recovery.remove()
+                    cleanup_tree.assert_not_called()
+                    cleanup_file.assert_not_called()
+                    self.assertEqual(config.read_bytes(), config_before)
+                    self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(),
+                                     manifest_before)
+                    self.assertEqual({path.name: path.read_bytes() for path in payload_root.iterdir()},
+                                     payload_before)
+                    self.assert_no_recovery_transaction_residue()
+                finally:
+                    if recovery.path_present(recovery.STATE()):
+                        shutil.rmtree(recovery.STATE())
+                    if recovery.path_present(payload_root):
+                        shutil.rmtree(payload_root)
+                    if recovery.path_present(module):
+                        module.unlink()
+                    module.write_bytes(b"stock-initramfs-one")
+                    if config.is_symlink() or recovery.path_present(config):
+                        config.unlink()
+                    config.write_text(self.original)
+
+    def test_transaction_files_are_created_exclusively_and_foreign_entries_survive(self):
+        kinds = ("file", "directory", "symlink", "broken-symlink")
+
+        def occupy(path, kind):
+            target = self.temp / f"exclusive-target-{path.name}-{kind}"
+            if kind == "file":
+                path.write_bytes(b"foreign-file")
+            elif kind == "directory":
+                path.mkdir(); (path / "foreign.bin").write_bytes(b"foreign-directory")
+            elif kind == "symlink":
+                target.write_bytes(b"foreign-target"); path.symlink_to(target)
+            else:
+                path.symlink_to(target)
+            return target
+
+        def signature(path):
+            info = path.lstat()
+            if path.is_symlink():
+                content = ("link", os.readlink(path),
+                           target_bytes(path.resolve(strict=False)))
+            elif path.is_file():
+                content = ("file", path.read_bytes())
+            else:
+                content = ("directory", {item.name: item.read_bytes() for item in path.iterdir()})
+            return info.st_ino, info.st_mode, content
+
+        def target_bytes(path):
+            return path.read_bytes() if path.is_file() else None
+
+        def remove_occupant(path, target):
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            else:
+                shutil.rmtree(path)
+            if target.exists():
+                target.unlink() if target.is_file() else shutil.rmtree(target)
+
+        for operation in ("recover", "remove"):
+            for temporary in ("stage", "backup"):
+                for kind in kinds:
+                    with self.subTest(operation=operation, temporary=temporary, kind=kind):
+                        data = self.prepare(); config = self.esp / "limine.conf"
+                        if operation == "recover":
+                            content = (self.original[:self.original.index("/Linux-CachyOS")]
+                                       + self.original[self.original.index("/User rescue"):])
+                            prefix = ".limine.conf.omen-recovery"
+                        else:
+                            content = self.original + "\n" + recovery.owned_block(data) + "\n"
+                            prefix = ".limine.conf.omen-remove"
+                        config.write_text(content); config_before = config.read_bytes()
+                        suffix = "-backup" if temporary == "backup" else ""
+                        destination = self.esp / f"{prefix}{suffix}.{os.getpid()}"
+                        original_require = recovery.require_absent
+                        target = None
+                        occupied_signature = None
+
+                        def occupy_after_check(*paths):
+                            nonlocal target, occupied_signature
+                            original_require(*paths)
+                            if destination in paths and target is None:
+                                target = occupy(destination, kind)
+                                occupied_signature = signature(destination)
+
+                        try:
+                            with mock.patch.object(recovery, "require_absent",
+                                                   side_effect=occupy_after_check):
+                                with self.assertRaises(recovery.Failure):
+                                    getattr(recovery, operation)()
+                            self.assertIsNotNone(target)
+                            self.assertEqual(signature(destination), occupied_signature)
+                            self.assertEqual(config.read_bytes(), config_before)
+                            recovery.load_owned_snapshot()
+                        finally:
+                            if recovery.path_present(destination):
+                                remove_occupant(destination, target)
+                            elif target is not None and target.exists():
+                                target.unlink() if target.is_file() else shutil.rmtree(target)
+                            if recovery.path_present(recovery.STATE()):
+                                shutil.rmtree(recovery.STATE())
+                            payload_root = self.esp / "omen-acpi-stock-recovery"
+                            if recovery.path_present(payload_root):
+                                shutil.rmtree(payload_root)
+                            for residue in (*self.esp.glob(".limine.conf.omen-*"),
+                                            *self.esp.glob(".omen-acpi-stock-recovery.*"),
+                                            *recovery.STATE().parent.glob(
+                                                ".omen-acpi-stock-recovery.*")):
+                                if residue.is_symlink() or residue.is_file():
+                                    residue.unlink()
+                                elif residue.exists():
+                                    shutil.rmtree(residue)
+                            if config.is_symlink() or recovery.path_present(config):
+                                config.unlink()
+                            config.write_text(self.original)
+
     def test_remove_owned_current_and_legacy_snapshots_with_valid_normal_entry(self):
         for version in ("2.1.11", "2.1.10"):
             with self.subTest(version=version):

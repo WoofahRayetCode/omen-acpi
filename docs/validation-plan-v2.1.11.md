@@ -67,3 +67,16 @@ documented HP OMEN MAX 16-ap0006sl reference machine, with board `8E35`, BIOS
     trusted snapshot after recovery-entry staging but before configuration
     commit. Confirm the entry is not created, the external snapshot change is
     preserved and the original `limine.conf` bytes are restored.
+19. Modify `limine.conf` while recover performs its final trusted-snapshot
+    review. Repeat while remove performs its owned-snapshot review. Confirm the
+    exact external bytes survive, no recovery entry is committed and the owned
+    payload/manifest pair remains in its canonical paths.
+20. During removal, delete or replace each normal initramfs in turn during the
+    pre-replace snapshot review, after configuration replacement and after
+    recovery-state detachment. Confirm no cleanup begins, detached state is
+    restored with no-replace renames and transaction-owned configuration bytes
+    roll back exactly without overwriting later external edits.
+21. Between the absence check and creation of every recovery/remove stage and
+    backup path, inject a regular file, directory, valid symlink and broken
+    symlink. Confirm exclusive creation blocks the operation and preserves each
+    foreign directory entry and symlink target byte-for-byte.

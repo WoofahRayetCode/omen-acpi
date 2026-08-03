@@ -366,6 +366,17 @@ replacement, and uses no-replace detached destinations. A changed component,
 new foreign file or occupied rollback path aborts without deleting the object
 that appeared concurrently.
 
+At the final commit boundary, recovery-entry creation checks the original
+`limine.conf` again after the last full snapshot review, replaces it, and then
+revalidates both the trusted snapshot and the exact installed configuration
+before deleting its backup. Removal maintains the normal kernel and all normal
+initramfs as a fully validated source before configuration replacement, after
+replacement and after recovery-state detachment. A source that disappears,
+changes identity or content, gains a link, contains an ACPI override or matches
+a managed variant aborts removal and restores the owned recovery pair. Stage
+and backup files are created exclusively, so concurrent files, directories or
+symlinks at reserved transaction paths are preserved and block the operation.
+
 Status recommends option 1 only for a clean stock boot with no snapshot and a
 fully usable normal entry. A missing, ambiguous, unusable or unverifiable
 normal source must be restored and verified first; no automatic preparation is
