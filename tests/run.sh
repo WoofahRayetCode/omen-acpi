@@ -5,6 +5,7 @@
 #
 set -Eeuo pipefail
 umask 077
+export PYTHONDONTWRITEBYTECODE=1
 
 readonly ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 work="$(mktemp -d /tmp/omen-acpi-tests.XXXXXX)"
@@ -930,9 +931,13 @@ if match is None:
 body = match.group("body")
 dependency = body.find("ensure_dependencies stock-recovery")
 administrator = body.find("ensure_admin")
-execution = body.find('"$SUDO_BIN" -- "$STOCK_RECOVERY" prepare')
+execution = body.find('stock_recovery_manager prepare')
 if min(dependency, administrator, execution) < 0 or not dependency < administrator < execution:
     raise SystemExit("standalone stock preparation does not check dependencies before sudo execution")
+wrapper = re.search(r'^stock_recovery_manager\(\) \{\n(?P<body>.*?)^\}', source,
+                    flags=re.MULTILINE | re.DOTALL)
+if wrapper is None or '"$SUDO_BIN" -- "$STOCK_RECOVERY" "$@"' not in wrapper.group("body"):
+    raise SystemExit("stock recovery wrapper does not invoke the Python manager through sudo")
 PY
 
 printf 'partial-installation repair checks...\n'
@@ -974,6 +979,37 @@ for target in ("TARGET_ROOT", "TARGET_DOC", "TARGET_BIN"):
 
 print("partial-installation repair wiring: PASS")
 PY
+
+printf 'pre-uninstall orphan checks...\n'
+pre_uninstall_fixture="$work/pre-uninstall"
+mkdir -p "$pre_uninstall_fixture/esp"
+printf 'timeout: 5\n/Linux-CachyOS\n' > "$pre_uninstall_fixture/esp/limine.conf"
+sed '$d' "$ROOT/scripts/03-manage-limine-entry.sh" > "$pre_uninstall_fixture/manager-functions.sh"
+for kind in directory broken-symlink; do
+    payload="$pre_uninstall_fixture/esp/omen-acpi-stock-recovery"
+    if [[ "$kind" == directory ]]; then
+        mkdir "$payload"
+        printf 'foreign\n' > "$payload/foreign.bin"
+    else
+        ln -s "$pre_uninstall_fixture/missing-target" "$payload"
+    fi
+    if TEST_ESP="$pre_uninstall_fixture/esp" \
+        bash -c '
+            source "$1"
+            require_root() { :; }
+            acquire_lock() { :; }
+            find_esp() { printf "%s\\n" "$TEST_ESP"; }
+            pre_uninstall_check_action
+        ' _ "$pre_uninstall_fixture/manager-functions.sh" \
+        >"$work/pre-uninstall-$kind.out" 2>"$work/pre-uninstall-$kind.err"; then
+        fail "pre-uninstall accepted an orphan recovery payload ($kind)"
+    fi
+    grep -Fq 'Incomplete stock-recovery state' "$work/pre-uninstall-$kind.err" \
+        || fail "pre-uninstall did not diagnose orphan recovery payload ($kind)"
+    [[ -e "$payload" || -L "$payload" ]] \
+        || fail "pre-uninstall deleted orphan recovery payload ($kind)"
+    if [[ -L "$payload" ]]; then rm -f -- "$payload"; else rm -rf -- "$payload"; fi
+done
 
 printf 'transform checks...\n'
 python3 "$ROOT/tests/test_transform.py"

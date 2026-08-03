@@ -33,6 +33,21 @@
   valid normal `linux-cachyos` entry, even when no experimental variants exist.
 - Added `lsinitcpio` to the stock-recovery dependency profile used by the
   standalone preparation command.
+- Snapshot preparation now treats the ESP payload and `/var/lib` manifest as a
+  symmetric pair. Orphaned, symlinked, wrongly typed or otherwise unverifiable
+  paths are reported as `modified` and are never staged over, renamed or
+  deleted automatically.
+- Recovery removal now reuses the full normal-source validator: the kernel and
+  every initramfs must be canonical, regular, single-linked, stable and present;
+  initramfs content and managed-variant hashes are checked again immediately
+  before commit. Removal remains available after a BIOS change or from an
+  experimental boot when that independently verified stock route exists.
+- The interactive 2.1.10 `refresh-required` path now preserves the legacy
+  snapshot and reaches the explicitly confirmed normal-entry reboot when that
+  entry is usable; missing, ambiguous or unusable normal state still requires
+  external recovery media.
+- Pre-uninstall checks now detect the reserved recovery payload on the ESP even
+  when its `/var/lib` state is absent, and never delete such an orphan.
 - Hardware checks remain restricted to the documented reference configuration.
   Broader hardware support remains future design work and is not available.
 

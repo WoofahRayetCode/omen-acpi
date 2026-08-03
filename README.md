@@ -115,8 +115,8 @@ The normalized transformations are documented in
 
 Download the release assets, verify both checksum layers, then install:
 
-The v2.1.11 URLs below are intentionally prepared for the future audited
-Release; no v2.1.11 tag or GitHub Release is created by this development step.
+Use only the published v2.1.11 Release assets. If these URLs return 404, the
+Release has not been published yet; do not install from a source snapshot.
 
 ```bash
 curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.11/omen-acpi-toolkit-v2.1.11.tar.gz
@@ -286,7 +286,7 @@ Stock boot and recovery
 
 Current boot: <current state>
 Preventive snapshot: <valid, refresh-required, missing, stale, modified or unavailable>
-Normal stock entry: <available, missing, ambiguous or unavailable>
+Normal stock entry: <available, missing, ambiguous, unusable or unavailable>
 Managed recovery entry: <available, legacy-untrusted, missing, modified or unavailable>
 
   1. Create or refresh the preventive recovery snapshot
@@ -326,11 +326,20 @@ safely named residue. Guided setup and every variant installation prepare the
 snapshot only after the requested variant schema is known to be absent; an
 installed, legacy or conflicting variant cannot refresh it.
 
+The reserved ESP payload directory and `/var/lib` manifest directory are one
+indivisible managed pair. Preparation permits both to be absent, or requires
+both to pass strict ownership and integrity verification before refresh. A lone
+directory, regular file, symlink (including a broken symlink), unsafe mode or
+foreign content is reported as `modified`; it is never renamed, repaired,
+replaced or deleted automatically. Inspect incomplete state manually before any
+further recovery operation.
+
 `omen-acpi recover-stock` has three outcomes:
 
 - on an already clean stock boot, it changes nothing;
-- while the normal entry still exists, it preserves that entry and offers the
-  same explicitly confirmed reboot as `reboot-stock`;
+- while one normal entry and its referenced payloads pass the full stock-source
+  validation, it preserves that entry and offers the same explicitly confirmed
+  reboot as `reboot-stock`;
 - if the normal entry is gone, it verifies the complete snapshot and creates
   only `zz-omen-acpi-stock-recovery`, pointing exclusively at the reserved
   copies. It preserves all other entries, global settings, comments, order and
@@ -349,11 +358,15 @@ Snapshots created by toolkit 2.1.10 are ownership- and integrity-checked only
 so that toolkit-owned files can be refreshed or removed safely. They are shown
 as `refresh-required` and are never trusted for automatic recovery because
 2.1.10 did not inspect initramfs contents before snapshot creation. If the
-normal `linux-cachyos` entry exists, boot it and recreate the snapshot from a
-clean verified stock boot. If that entry has already disappeared, the 2.1.10
-snapshot is not used and external recovery media is required. Removal of either
-a current or legacy owned snapshot always requires one unambiguous, structurally
-valid normal `linux-cachyos` entry.
+normal `linux-cachyos` entry and its payloads pass full validation, option 2
+preserves the 2.1.10 snapshot and offers the normal confirmed stock-reboot
+prompt; after booting stock, choose option 1 to recreate the snapshot. If that
+entry is missing, ambiguous or unusable, the 2.1.10 snapshot is not used and
+external recovery media is required. Removal of either a current or legacy
+owned snapshot always requires one unambiguous normal `linux-cachyos` entry
+whose kernel and every initramfs are regular, stable, canonical, present,
+single-linked and verified free of an ACPI override or managed-variant payload.
+Removal does not require the active boot or current BIOS to match stock.
 
 The recovery entry includes a snapshot-bound marker. The dashboard displays
 `STOCK RECOVERY ACTIVE` only when that marker matches a root-owned,
@@ -532,6 +545,8 @@ sharing.
 | Recovery snapshot is unavailable after upgrading from 2.1.9 | Keep `linux-cachyos`, boot it, then run `omen-acpi prepare-stock-recovery`. |
 | Normal entry and recovery snapshot are both missing | Automatic recovery is impossible. Do not reuse a variant initramfs; use external manual recovery media. |
 | Recovery manifest or payload hash fails | Nothing is changed. Restore a normal stock boot externally and prepare a fresh snapshot. |
+| Only the ESP recovery payload or only `/var/lib/omen-acpi-stock-recovery` exists | Status reports `modified`. Nothing is repaired or deleted automatically; inspect the incomplete state manually. |
+| Recovery removal says the normal entry is unusable | Restore one normal `linux-cachyos` entry whose kernel and initramfs payloads exist and pass the same content and stable-file checks used during snapshot preparation. |
 | `omen-acpi` not found after an update | Refresh your shell's command cache: `hash -r` in Bash, `rehash` in Zsh. Fish needs nothing. |
 | The updater says a release is "already installed and consistent" | That version is current. Use `--force` only if you intentionally need to reinstall it. |
 

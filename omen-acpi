@@ -745,11 +745,15 @@ reboot_stock() {
     show_stock_reboot_prompt "$resume_action" "$resume_variant"
 }
 
+stock_recovery_manager() {
+    "$SUDO_BIN" -- "$STOCK_RECOVERY" "$@"
+}
+
 prepare_stock_recovery() {
     ensure_dependencies stock-recovery
     ensure_admin
     section "Prepare preventive stock recovery"
-    "$SUDO_BIN" -- "$STOCK_RECOVERY" prepare
+    stock_recovery_manager prepare
     STOCK_RECOVERY_PREPARED=1
 }
 
@@ -790,12 +794,14 @@ recover_stock() {
     ensure_dependencies stock-recovery
     ensure_admin
     local preview
-    preview="$("$SUDO_BIN" -- "$STOCK_RECOVERY" status 2>/dev/null || true)"
+    preview="$(stock_recovery_manager status 2>/dev/null || true)"
     if grep -Fxq $'SNAPSHOT\trefresh-required' <<<"$preview"; then
         if grep -Fxq $'NORMAL_ENTRY\tavailable' <<<"$preview"; then
-            die "The 2.1.10 recovery snapshot is untrusted for boot. Reboot through the normal stock entry, then refresh it from a clean stock boot."
+            warn "The 2.1.10 recovery snapshot is untrusted for boot and will be preserved, not used."
+            info "The verified normal linux-cachyos entry will be used for the stock reboot."
+        else
+            die "The 2.1.10 recovery snapshot is untrusted and no usable unambiguous normal stock entry is available. Automatic recovery is blocked; use external recovery media."
         fi
-        die "The 2.1.10 recovery snapshot is untrusted and the normal stock entry is unavailable. Automatic recovery is blocked; use external recovery media."
     fi
     if grep -Fxq $'NORMAL_ENTRY\tmissing' <<<"$preview" \
         && grep -Fxq $'SNAPSHOT\tvalid' <<<"$preview"; then
@@ -804,12 +810,15 @@ recover_stock() {
         printf 'from the verified snapshot. The Limine default will not be changed.\n\n'
         confirm_dangerous "Create or restore the managed stock recovery entry?" no || return 0
     fi
-    result="$("$SUDO_BIN" -- "$STOCK_RECOVERY" recover)" \
+    result="$(stock_recovery_manager recover)" \
         || die "Automatic stock recovery is unavailable. If no snapshot was prepared before the normal entry disappeared, use external manual recovery media."
     IFS=$'\t' read -r kind title <<<"$result"
     case "$kind" in
         NORMAL)
             info "The normal stock entry still exists and was not modified."
+            if grep -Fxq $'SNAPSHOT\trefresh-required' <<<"$preview"; then
+                info "After booting stock, choose recovery option 1 to create a trusted 2.1.11 snapshot."
+            fi
             show_stock_reboot_prompt
             ;;
         CREATED|READY)
@@ -828,11 +837,12 @@ remove_stock_recovery() {
     ensure_dependencies stock-recovery
     section "Remove managed stock recovery"
     printf 'This removes only the owned zz-omen-acpi-stock-recovery entry, its copied payloads,\n'
-    printf 'and its integrity-checked manifest. A valid normal linux-cachyos entry is required.\n'
+    printf 'and its integrity-checked manifest. A valid normal linux-cachyos entry with verified\n'
+    printf 'kernel and override-free initramfs payloads is required.\n'
     printf 'Existing normal and experimental entries are not edited.\n\n'
     confirm_dangerous "Remove the managed recovery snapshot and entry?" no || return 0
     ensure_admin
-    "$SUDO_BIN" -- "$STOCK_RECOVERY" remove
+    stock_recovery_manager remove
 }
 
 show_stock_recovery_details() {
@@ -840,7 +850,7 @@ show_stock_recovery_details() {
     ensure_dependencies stock-recovery
     ensure_admin
     section "Detailed stock recovery status"
-    if ! output="$("$SUDO_BIN" -- "$STOCK_RECOVERY" status)"; then
+    if ! output="$(stock_recovery_manager status)"; then
         warn "Recovery status is unavailable; no changes were made."
         return 1
     fi

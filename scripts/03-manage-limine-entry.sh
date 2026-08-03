@@ -93,8 +93,8 @@ Actions:
             Print the exact normal CachyOS Limine entry selected by the safe
             parser. This read-only action is used by the public CLI.
   pre-uninstall-check
-            Prove that neither reserved experimental entry name remains in the
-            mounted Limine configuration before the toolkit is uninstalled.
+            Prove that neither a reserved entry name nor an orphaned stock
+            recovery payload remains on the mounted ESP before uninstall.
 
 No action is taken when the script is run without an explicit action.
 EOF
@@ -2555,7 +2555,7 @@ stock_entry_action() {
 }
 
 pre_uninstall_check_action() {
-    local esp config entry_name
+    local esp config entry_name recovery_payload
 
     require_root pre-uninstall-check
     for command in findmnt flock grep head install python3 readlink realpath stat; do
@@ -2567,6 +2567,11 @@ pre_uninstall_check_action() {
     config="$esp/limine.conf"
     [[ -f "$config" && ! -L "$config" ]] \
         || die "Limine configuration is not a normal file: $config"
+
+    recovery_payload="$esp/omen-acpi-stock-recovery"
+    if [[ -e "$recovery_payload" || -L "$recovery_payload" ]]; then
+        die "Incomplete stock-recovery state: the ESP payload still exists at $recovery_payload. Inspect or restore the managed recovery state; uninstall will not delete it implicitly."
+    fi
 
     for entry_name in \
         zz-omen-acpi-s5-test \

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (C) 2026 Paolo De Marinis
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -Eeuo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -96,6 +98,56 @@ if ( recover_stock ) >"$work/ambiguous.out" 2>"$work/ambiguous.err"; then
 fi
 contains "$(<"$work/ambiguous.err")" 'automatic recovery is blocked' "ambiguous recovery did not fail closed"
 probe_boot() { PROBE_STATE=s5; PROBE_CLEAN=0; PROBE_REVISION=0x0107200A; PROBE_REASON=test; }
+
+ensure_admin() { :; }
+show_stock_reboot_prompt() { printf 'stock-reboot-prompt\n' >> "$work/legacy-actions"; }
+LEGACY_NORMAL_STATE=available
+RECOVER_RESULT='NORMAL	Linux-CachyOS'
+stock_recovery_manager() {
+    case "$1" in
+        status)
+            printf 'SNAPSHOT\trefresh-required\nNORMAL_ENTRY\t%s\nRECOVERY_ENTRY\tlegacy-untrusted\n' \
+                "$LEGACY_NORMAL_STATE"
+            ;;
+        recover)
+            printf 'manager-recover\n' >> "$work/legacy-actions"
+            [[ -n "$RECOVER_RESULT" ]] || return 1
+            printf '%b\n' "$RECOVER_RESULT"
+            ;;
+        *) return 1 ;;
+    esac
+}
+: > "$work/legacy-actions"
+legacy_output="$(recover_stock 2>&1)"
+contains "$legacy_output" '2.1.10 recovery snapshot is untrusted for boot and will be preserved' \
+    "legacy recovery did not explain that the snapshot is preserved"
+contains "$legacy_output" 'choose recovery option 1' \
+    "legacy recovery omitted the post-boot 2.1.11 refresh instruction"
+[[ "$(<"$work/legacy-actions")" == $'manager-recover\nstock-reboot-prompt' ]] \
+    || fail "legacy recovery did not reach the verified normal-entry reboot prompt"
+
+for LEGACY_NORMAL_STATE in missing ambiguous unusable; do
+    : > "$work/legacy-actions"
+    if ( recover_stock ) >"$work/legacy-$LEGACY_NORMAL_STATE.out" 2>"$work/legacy-$LEGACY_NORMAL_STATE.err"; then
+        fail "legacy recovery accepted a $LEGACY_NORMAL_STATE normal entry"
+    fi
+    contains "$(<"$work/legacy-$LEGACY_NORMAL_STATE.err")" 'external recovery media' \
+        "legacy $LEGACY_NORMAL_STATE state did not require external media"
+    [[ ! -s "$work/legacy-actions" ]] \
+        || fail "legacy $LEGACY_NORMAL_STATE state invoked the recovery manager"
+done
+
+LEGACY_NORMAL_STATE=available
+RECOVER_RESULT=''
+: > "$work/legacy-actions"
+if ( recover_stock ) >"$work/legacy-race.out" 2>"$work/legacy-race.err"; then
+    fail "legacy preview race was accepted after the normal entry disappeared"
+fi
+contains "$(<"$work/legacy-race.err")" 'Automatic stock recovery is unavailable' \
+    "legacy preview race did not fail through the authoritative manager"
+[[ "$(<"$work/legacy-actions")" == 'manager-recover' ]] \
+    || fail "legacy preview race reached a reboot prompt or modified an entry"
+
 prepare_stock_recovery_interactive() { printf 'prepare\n' >> "$work/menu-actions"; }
 recover_stock() { printf 'recover\n' >> "$work/menu-actions"; }
 show_stock_recovery_details() { printf 'status\n' >> "$work/menu-actions"; }

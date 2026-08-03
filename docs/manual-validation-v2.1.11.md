@@ -41,3 +41,15 @@ documented HP OMEN MAX 16-ap0006sl reference machine, with board `8E35`, BIOS
 12. Remove current and legacy owned snapshots only while one valid normal
     `linux-cachyos` entry exists. Repeat with that entry missing and ambiguous;
     confirm configuration, manifest and payload bytes remain unchanged.
+13. On expendable filesystem fixtures, create every incomplete combination of
+    ESP recovery payload and `/var/lib` state, including regular files, valid
+    and broken symlinks and unsafe directory modes. Confirm status says
+    `modified` and prepare/uninstall neither rename nor delete any path.
+14. From simulated S5 and Combined boots and with a changed BIOS fixture,
+    remove owned 2.1.10 and 2.1.11 snapshots only when the normal entry's real
+    kernel and initramfs payloads pass stable identity, hash and `lsinitcpio`
+    checks. Inject each unusable-source case and confirm all owned bytes remain.
+15. With a `refresh-required` 2.1.10 fixture and a usable normal entry, select
+    recovery option 2 and confirm it reaches the explicit normal-stock reboot
+    prompt without creating a recovery entry. Repeat with missing, ambiguous
+    and unusable entries and confirm external media is required.

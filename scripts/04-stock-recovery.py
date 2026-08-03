@@ -25,7 +25,8 @@ import sys
 import tempfile
 
 VERSION = "2.1.11"
-OWNED_SNAPSHOT_VERSIONS = {VERSION, "2.1.10"}
+OWNED_SNAPSHOT_VERSIONS = {"2.1.10", "2.1.11"}
+TRUSTED_SNAPSHOT_VERSIONS = {"2.1.11"}
 SCHEMA = 1
 ENTRY = "zz-omen-acpi-stock-recovery"
 BEGIN = "# BEGIN OMEN-ACPI OWNED STOCK RECOVERY v1"
@@ -326,6 +327,60 @@ def inspect_source_initramfs(path: Path, managed_hashes: set[str]) -> None:
         raise Failure(f"ACPI override content found in source initramfs: {path}")
 
 
+def path_present(path: Path) -> bool:
+    """Treat every directory entry, including a broken symlink, as present."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise Failure(f"cannot inspect managed recovery path {path}: {error}") from error
+    return True
+
+
+def stable_fingerprint(path: Path) -> tuple[tuple[int, int, int, int, int, int], str]:
+    """Hash one regular single-link file while proving stable identity."""
+    before = regular(path)
+    identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+                before.st_ctime_ns, stat.S_IMODE(before.st_mode))
+    digest = sha(path)
+    after = regular(path)
+    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                      after.st_ctime_ns, stat.S_IMODE(after.st_mode))
+    if identity != after_identity:
+        raise Failure(f"source changed while inspected: {path}")
+    return identity, digest
+
+
+def validate_normal_source(text: str, esp: Path) -> dict:
+    """Select and fully validate the normal entry and each referenced payload."""
+    source = normal_entry(text)
+    assert source is not None
+    kernel_value, command, modules = boot_fields(source)
+    if any(marker in command for marker in VARIANT_MARKERS) or "omen_acpi.stock_recovery=" in command:
+        raise Failure("normal entry contains an OMEN ACPI marker")
+    kernel, kernel_canonical = limine_local(kernel_value, esp)
+    module_pairs = [limine_local(item, esp) for item in modules]
+    forbidden = ("omen-acpi-s5", "omen-acpi-combined", "DSDT.aml")
+    for local, canonical in [(kernel, kernel_canonical), *module_pairs]:
+        if any(token.lower() in canonical.lower() for token in forbidden):
+            raise Failure(f"variant or ACPI-override payload rejected: {canonical}")
+
+    known_hashes = managed_initramfs_hashes()
+    fingerprints = []
+    for local, canonical in [(kernel, kernel_canonical), *module_pairs]:
+        before = stable_fingerprint(local)
+        if local != kernel:
+            inspect_source_initramfs(local, known_hashes)
+        after = stable_fingerprint(local)
+        if before != after:
+            raise Failure(f"source changed during validation: {local}")
+        fingerprints.append((canonical, *before))
+    return {"entry": source, "kernel": kernel, "kernel_canonical": kernel_canonical,
+            "command": command, "modules": module_pairs,
+            "fingerprints": tuple(fingerprints)}
+
+
 def managed_initramfs_hashes() -> set[str]:
     hashes: set[str] = set()
     for variant in ("s5", "combined"):
@@ -359,8 +414,8 @@ def restore_config_if_unchanged(config: Path, backup: Path, installed: bytes) ->
     return True
 
 
-def snapshot() -> dict:
-    """Verify ownership, schema and byte integrity, but not recovery trust."""
+def load_owned_snapshot(esp: Path | None = None) -> dict:
+    """Verify managed ownership, schema and integrity, but not boot trust."""
     state = STATE()
     secure_dir(state)
     manifest_path = state / "manifest.json"
@@ -380,7 +435,7 @@ def snapshot() -> dict:
         raise Failure("recovery manifest schema or provenance is invalid")
     if tuple(data["machine"][key] for key in ("product", "board", "bios")) != EXPECTED:
         raise Failure("recovery snapshot belongs to a different machine or BIOS")
-    payload_root, canonical = limine_local(data["payload_root"], esp_path())
+    payload_root, canonical = limine_local(data["payload_root"], esp if esp is not None else esp_path())
     if canonical != data["payload_root"] or payload_root.name != "omen-acpi-stock-recovery":
         raise Failure("invalid recovery payload root")
     secure_dir(payload_root)
@@ -401,15 +456,30 @@ def snapshot() -> dict:
     return data
 
 
-def trusted_snapshot() -> dict:
+def load_trusted_snapshot(esp: Path | None = None) -> dict:
     """Return only snapshots created with the content checks in 2.1.11."""
-    data = snapshot()
-    if data["toolkit_version"] != VERSION:
+    data = load_owned_snapshot(esp)
+    if data["toolkit_version"] not in TRUSTED_SNAPSHOT_VERSIONS:
         raise Failure(
             "the recovery snapshot was created by 2.1.10 and is integrity-checked "
             "but untrusted for boot; refresh it from a clean stock boot"
         )
     return data
+
+
+def existing_owned_snapshot(esp: Path) -> dict | None:
+    """Require the reserved payload/state paths to be absent or a verified pair."""
+    payload = esp / "omen-acpi-stock-recovery"
+    state = STATE()
+    payload_present = path_present(payload)
+    state_present = path_present(state)
+    if not payload_present and not state_present:
+        return None
+    if payload_present != state_present:
+        raise Failure(
+            "recovery payload and manifest state are incomplete; manual inspection is required"
+        )
+    return load_owned_snapshot(esp)
 
 
 def prepare() -> None:
@@ -421,25 +491,14 @@ def prepare() -> None:
     config = esp / "limine.conf"
     config_before = regular(config)
     text = config.read_text(encoding="utf-8", errors="strict")
-    source = normal_entry(text)
-    assert source is not None
-    kernel_value, command, modules = boot_fields(source)
-    if any(marker in command for marker in VARIANT_MARKERS) or "omen_acpi.stock_recovery=" in command:
-        raise Failure("normal entry contains an OMEN ACPI marker")
-    kernel, kernel_canonical = limine_local(kernel_value, esp)
-    module_pairs = [limine_local(item, esp) for item in modules]
-    forbidden = ("omen-acpi-s5", "omen-acpi-combined", "DSDT.aml")
-    for local, canonical in [(kernel, kernel_canonical), *module_pairs]:
-        if any(token.lower() in canonical.lower() for token in forbidden):
-            raise Failure(f"variant or ACPI-override payload rejected: {canonical}")
-        regular(local)
-    known_hashes = managed_initramfs_hashes()
-    for local, _canonical in module_pairs:
-        inspect_source_initramfs(local, known_hashes)
+    source_data = validate_normal_source(text, esp)
+    source = source_data["entry"]
+    kernel = source_data["kernel"]
+    kernel_canonical = source_data["kernel_canonical"]
+    command = source_data["command"]
+    module_pairs = source_data["modules"]
     payload = esp / "omen-acpi-stock-recovery"
-    if payload.exists() or payload.is_symlink():
-        secure_dir(payload)
-        snapshot()  # prove ownership before replacement
+    existing_owned_snapshot(esp)  # prove both old components before replacement
     payload_stage = Path(tempfile.mkdtemp(prefix=".omen-acpi-stock-recovery.", dir=esp))
     state_dir = STATE()
     state_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -478,7 +537,7 @@ def prepare() -> None:
             raise Failure("simulated interruption after payload activation")
         if state_dir.exists(): state_dir.rename(old_state)
         state_stage.rename(state_dir); activated_state = True; fsync_dir(state_dir.parent)
-        snapshot()
+        load_owned_snapshot(esp)
         # The new pair is committed here. Cleanup is non-essential and must
         # never roll it back after either old component has been deleted.
         activated_payload = activated_state = False
@@ -522,9 +581,10 @@ def recover() -> None:
     text = original_bytes.decode("utf-8", errors="strict")
     normal = normal_entry(text, required=False)
     if normal is not None:
-        print(f"NORMAL\t{normal['title']}")
+        source_data = validate_normal_source(text, esp)
+        print(f"NORMAL\t{source_data['entry']['title']}")
         return
-    data = trusted_snapshot()
+    data = load_trusted_snapshot(esp)
     parsed = entries(text)
     reserved = [item for item in parsed if item["title"] == ENTRY]
     if len(reserved) > 1:
@@ -569,7 +629,7 @@ def active() -> None:
     state = probe()
     if state.get("STATE") != "stock" or state.get("CLEAN") != "1" or state.get("DSDT_REVISION") != STOCK_REVISION:
         raise Failure("stock recovery marker cannot override a non-stock DSDT classification")
-    data = trusted_snapshot()
+    data = load_trusted_snapshot()
     cmdline = rooted("/proc/cmdline").read_text(encoding="utf-8").split()
     markers = [item.split("=", 1)[1] for item in cmdline if item.startswith("omen_acpi.stock_recovery=")]
     if markers != [data["snapshot_id"]]:
@@ -583,14 +643,16 @@ def remove() -> None:
     original_bytes = config.read_bytes(); before_identity = file_identity(config, original_bytes)
     text = original_bytes.decode("utf-8", errors="strict")
     try:
-        normal = normal_entry(text, required=True)
+        source_data = validate_normal_source(text, esp)
     except Failure as error:
         raise Failure(
             "recovery removal requires one valid normal linux-cachyos entry; "
             "restore a verifiable stock entry before removing the snapshot"
         ) from error
-    assert normal is not None
-    data = snapshot(); block = owned_block(data)
+    data = existing_owned_snapshot(esp)
+    if data is None:
+        raise Failure("managed recovery snapshot is missing")
+    block = owned_block(data)
     reserved = [item for item in entries(text) if item["title"] == ENTRY]
     if len(reserved) > 1 or text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
         raise Failure("reserved recovery ownership markers are ambiguous")
@@ -615,6 +677,11 @@ def remove() -> None:
         file_identity(backup, original_bytes)
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed during removal backup")
+        confirmed_source = validate_normal_source(text, esp)
+        if confirmed_source["fingerprints"] != source_data["fingerprints"]:
+            raise Failure("normal CachyOS payloads changed before removal commit")
+        if file_identity(config, original_bytes) != before_identity:
+            raise Failure("Limine configuration changed before removal commit")
         os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
         file_identity(config, new_text.encode("utf-8"))
         payload.rename(detached_payload); STATE().rename(detached_state)
@@ -682,22 +749,37 @@ def status() -> None:
         text = (esp / "limine.conf").read_text(encoding="utf-8", errors="strict")
         try:
             normal = normal_entry(text, required=False)
-            normal_state = "available" if normal is not None else "missing"
         except Failure:
             normal_state = "ambiguous"
+        else:
+            if normal is None:
+                normal_state = "missing"
+            else:
+                try:
+                    source_data = validate_normal_source(text, esp)
+                    normal = source_data["entry"]
+                    normal_state = "available"
+                except Failure:
+                    normal = None
+                    normal_state = "unusable"
 
-        if not STATE().exists() and not STATE().is_symlink():
+        payload = esp / "omen-acpi-stock-recovery"
+        state_present = path_present(STATE())
+        payload_present = path_present(payload)
+        if not state_present and not payload_present:
             snapshot_state = "missing"
+        elif state_present != payload_present:
+            snapshot_state = "modified"
         else:
             try:
-                data = snapshot()
+                data = load_owned_snapshot(esp)
                 if data["toolkit_version"] == VERSION:
                     snapshot_state = "valid"
                 else:
                     snapshot_state = "refresh-required"
                 if normal is not None and snapshot_state == "valid":
-                    kernel_value, _command, modules = boot_fields(normal)
-                    sources = [limine_local(kernel_value, esp)[0], *[limine_local(item, esp)[0] for item in modules]]
+                    source_data = validate_normal_source(text, esp)
+                    sources = [source_data["kernel"], *[item[0] for item in source_data["modules"]]]
                     stored = data["payloads"]
                     if len(sources) != len(stored) or any(sha(source) != item["sha256"] for source, item in zip(sources, stored)):
                         snapshot_state = "stale"

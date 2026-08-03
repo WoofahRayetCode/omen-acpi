@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -72,7 +73,7 @@ class RecoveryTest(unittest.TestCase):
 
     def prepare(self):
         recovery.prepare()
-        return recovery.snapshot()
+        return recovery.load_owned_snapshot()
 
     def rewrite_snapshot(self, version="2.1.10", hostile_module=False):
         manifest = recovery.STATE() / "manifest.json"
@@ -139,29 +140,31 @@ class RecoveryTest(unittest.TestCase):
         for name in ("kernel.bin", "module-000.bin"):
             with self.subTest(name=name):
                 original = (payload / name).read_bytes(); (payload / name).write_bytes(original + b"tamper")
-                with self.assertRaises(recovery.Failure): recovery.snapshot()
+                with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
                 (payload / name).write_bytes(original)
         manifest = recovery.STATE() / "manifest.json"
         original_manifest = manifest.read_text(); manifest.write_text(original_manifest.replace("F.13", "F.99"))
-        with self.assertRaises(recovery.Failure): recovery.snapshot()
+        with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
         manifest.write_text(original_manifest)
         (payload / "module-001.bin").unlink()
-        with self.assertRaises(recovery.Failure): recovery.snapshot()
+        with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
 
     def test_stale_metadata_and_payload_symlink_are_rejected(self):
         self.prepare(); manifest = recovery.STATE() / "manifest.json"
         data = json.loads(manifest.read_text()); data["toolkit_version"] = "2.1.9"
         manifest.write_text(json.dumps(data))
-        with self.assertRaises(recovery.Failure): recovery.snapshot()
+        with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
         self.setUp_snapshot_again_after_tamper()
         payload = self.esp / "omen-acpi-stock-recovery/module-000.bin"
         payload.unlink(); payload.symlink_to("module-001.bin")
-        with self.assertRaises(recovery.Failure): recovery.snapshot()
+        with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
 
     def test_valid_2_1_10_snapshot_can_be_verified_and_refreshed(self):
+        self.assertEqual(recovery.OWNED_SNAPSHOT_VERSIONS, {"2.1.10", "2.1.11"})
+        self.assertEqual(recovery.TRUSTED_SNAPSHOT_VERSIONS, {"2.1.11"})
         self.prepare(); data = self.rewrite_snapshot()
-        self.assertEqual(recovery.snapshot()["toolkit_version"], "2.1.10")
-        with self.assertRaises(recovery.Failure): recovery.trusted_snapshot()
+        self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.1.10")
+        with self.assertRaises(recovery.Failure): recovery.load_trusted_snapshot()
         output = io.StringIO()
         with redirect_stdout(output): recovery.status()
         self.assertIn("SNAPSHOT\trefresh-required", output.getvalue())
@@ -174,7 +177,7 @@ class RecoveryTest(unittest.TestCase):
         self.assertIn("RECOVERY_ENTRY\tlegacy-untrusted", output.getvalue())
         config.write_text(self.original)
         recovery.prepare()
-        self.assertEqual(recovery.snapshot()["toolkit_version"], "2.1.11")
+        self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.1.11")
         output = io.StringIO()
         with redirect_stdout(output): recovery.status()
         self.assertIn("SNAPSHOT\tvalid", output.getvalue())
@@ -185,8 +188,8 @@ class RecoveryTest(unittest.TestCase):
         hostile = self.esp / "omen-acpi-stock-recovery/module-001.bin"
         with self.assertRaises(recovery.Failure):
             recovery.inspect_source_initramfs(hostile, set())
-        self.assertEqual(recovery.snapshot()["snapshot_id"], data["snapshot_id"])
-        with self.assertRaises(recovery.Failure): recovery.trusted_snapshot()
+        self.assertEqual(recovery.load_owned_snapshot()["snapshot_id"], data["snapshot_id"])
+        with self.assertRaises(recovery.Failure): recovery.load_trusted_snapshot()
         config = self.esp / "limine.conf"
         without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
         config.write_text(without_normal); before = config.read_bytes()
@@ -207,12 +210,85 @@ class RecoveryTest(unittest.TestCase):
         shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
         self.prepare()
 
+    def owned_bytes(self):
+        payload = self.esp / "omen-acpi-stock-recovery"
+        return ((self.esp / "limine.conf").read_bytes(),
+                (recovery.STATE() / "manifest.json").read_bytes(),
+                {path.name: path.read_bytes() for path in payload.iterdir()})
+
+    def assert_owned_bytes(self, expected):
+        payload = self.esp / "omen-acpi-stock-recovery"
+        self.assertEqual((self.esp / "limine.conf").read_bytes(), expected[0])
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), expected[1])
+        self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, expected[2])
+
+    def assert_no_recovery_transaction_residue(self):
+        residues = [
+            *self.esp.glob(".omen-acpi-stock-recovery.*"),
+            *recovery.STATE().parent.glob(".omen-acpi-stock-recovery.*"),
+        ]
+        self.assertEqual(residues, [])
+
+    def test_prepare_rejects_state_without_payload_before_staging(self):
+        state = recovery.STATE(); state.mkdir(parents=True, mode=0o700)
+        foreign = state / "foreign.bin"; foreign.write_bytes(b"do-not-touch")
+        before_state = state.lstat(); before_file = foreign.lstat()
+        with self.assertRaises(recovery.Failure): recovery.prepare()
+        self.assertEqual(foreign.read_bytes(), b"do-not-touch")
+        self.assertEqual((state.lstat().st_ino, stat.S_IMODE(state.lstat().st_mode)),
+                         (before_state.st_ino, stat.S_IMODE(before_state.st_mode)))
+        self.assertEqual((foreign.lstat().st_ino, foreign.lstat().st_mtime_ns),
+                         (before_file.st_ino, before_file.st_mtime_ns))
+        output = io.StringIO()
+        with redirect_stdout(output): recovery.status()
+        self.assertIn("SNAPSHOT\tmodified", output.getvalue())
+        self.assertNotIn("Choose option 1 to create", output.getvalue())
+        self.assert_no_recovery_transaction_residue()
+
+    def test_prepare_and_status_reject_payload_without_state(self):
+        payload = self.esp / "omen-acpi-stock-recovery"
+        payload.mkdir(mode=0o700); (payload / "foreign.bin").write_bytes(b"foreign")
+        before = (payload.lstat().st_ino, (payload / "foreign.bin").read_bytes())
+        with self.assertRaises(recovery.Failure): recovery.prepare()
+        self.assertEqual((payload.lstat().st_ino, (payload / "foreign.bin").read_bytes()), before)
+        output = io.StringIO()
+        with redirect_stdout(output): recovery.status()
+        self.assertIn("SNAPSHOT\tmodified", output.getvalue())
+        self.assertNotIn("Choose option 1 to create", output.getvalue())
+        self.assertIn("No automatic change is safe", output.getvalue())
+        self.assert_no_recovery_transaction_residue()
+
+    def test_every_ambiguous_orphan_path_type_is_untouched(self):
+        for side in ("state", "payload"):
+            for kind in ("file", "symlink", "broken-symlink", "unsafe-directory"):
+                with self.subTest(side=side, kind=kind):
+                    path = recovery.STATE() if side == "state" else self.esp / "omen-acpi-stock-recovery"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    target = self.temp / f"target-{side}-{kind}"
+                    if kind == "file":
+                        path.write_bytes(b"foreign")
+                    elif kind == "symlink":
+                        target.mkdir(); path.symlink_to(target)
+                    elif kind == "broken-symlink":
+                        path.symlink_to(target)
+                    else:
+                        path.mkdir(mode=0o755); os.chmod(path, 0o755)
+                    before = path.lstat()
+                    with self.assertRaises(recovery.Failure): recovery.prepare()
+                    after = path.lstat()
+                    self.assertEqual((after.st_ino, after.st_mode, after.st_size),
+                                     (before.st_ino, before.st_mode, before.st_size))
+                    self.assert_no_recovery_transaction_residue()
+                    if path.is_symlink() or path.is_file(): path.unlink()
+                    else: shutil.rmtree(path)
+                    if target.exists(): shutil.rmtree(target)
+
     def test_interruption_after_payload_activation_has_complete_rollback(self):
         old = self.prepare(); old_kernel = (self.esp / "omen-acpi-stock-recovery/kernel.bin").read_bytes()
         (self.esp / "vmlinuz-linux-cachyos").write_bytes(b"new-stock-kernel")
         with mock.patch.dict(os.environ, {"OMEN_ACPI_TEST_FAIL_AFTER_PAYLOAD": "1"}):
             with self.assertRaises(recovery.Failure): recovery.prepare()
-        self.assertEqual(recovery.snapshot()["snapshot_id"], old["snapshot_id"])
+        self.assertEqual(recovery.load_owned_snapshot()["snapshot_id"], old["snapshot_id"])
         self.assertEqual((self.esp / "omen-acpi-stock-recovery/kernel.bin").read_bytes(), old_kernel)
 
     def test_renamed_override_initramfs_is_rejected_and_old_snapshot_survives(self):
@@ -221,7 +297,7 @@ class RecoveryTest(unittest.TestCase):
         self.lsinitcpio.write_text(script)
         with self.assertRaises(recovery.Failure):
             recovery.prepare()
-        self.assertEqual(recovery.snapshot()["snapshot_id"], old["snapshot_id"])
+        self.assertEqual(recovery.load_owned_snapshot()["snapshot_id"], old["snapshot_id"])
 
     def test_renamed_managed_payload_hash_is_rejected(self):
         old = self.prepare()
@@ -232,7 +308,7 @@ class RecoveryTest(unittest.TestCase):
         (managed / "initramfs.sha256").write_text(recovery.sha(source) + "\n")
         with self.assertRaises(recovery.Failure):
             recovery.prepare()
-        self.assertEqual(recovery.snapshot()["snapshot_id"], old["snapshot_id"])
+        self.assertEqual(recovery.load_owned_snapshot()["snapshot_id"], old["snapshot_id"])
 
     def test_prepare_cleanup_failure_keeps_new_committed_pair(self):
         for point in ("prepare-old-payload", "prepare-old-state"):
@@ -242,7 +318,7 @@ class RecoveryTest(unittest.TestCase):
                 with mock.patch.dict(os.environ, {"OMEN_ACPI_TEST_FAIL_CLEANUP": point}):
                     recovery.prepare()
                 self.assertEqual((self.esp / "omen-acpi-stock-recovery/kernel.bin").read_bytes(), f"new-{point}".encode())
-                recovery.snapshot()
+                recovery.load_owned_snapshot()
                 for old in (*self.esp.glob(".omen-acpi-stock-recovery.old.*"),
                             *recovery.STATE().parent.glob(".omen-acpi-stock-recovery.old.*")):
                     shutil.rmtree(old)
@@ -258,9 +334,9 @@ class RecoveryTest(unittest.TestCase):
     def test_state_symlink_and_mode_are_rejected(self):
         state = recovery.STATE(); state.parent.mkdir(parents=True, exist_ok=True)
         state.symlink_to(self.temp)
-        with self.assertRaises(recovery.Failure): recovery.snapshot()
+        with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
         state.unlink(); state.mkdir(mode=0o755)
-        with self.assertRaises(recovery.Failure): recovery.snapshot()
+        with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
 
     def test_normal_entry_means_recover_never_changes_config(self):
         before = (self.esp / "limine.conf").read_bytes()
@@ -294,7 +370,7 @@ class RecoveryTest(unittest.TestCase):
         before = config.read_bytes()
         with self.assertRaises(recovery.Failure): recovery.remove()
         self.assertEqual(config.read_bytes(), before)
-        recovery.snapshot()
+        recovery.load_owned_snapshot()
 
     def test_remove_rejects_every_ambiguous_reserved_form_without_writes(self):
         data = self.prepare(); config = self.esp / "limine.conf"; block = recovery.owned_block(data)
@@ -311,7 +387,7 @@ class RecoveryTest(unittest.TestCase):
                 config.write_text(content); before = config.read_bytes()
                 with self.assertRaises(recovery.Failure): recovery.remove()
                 self.assertEqual(config.read_bytes(), before)
-                recovery.snapshot()
+                recovery.load_owned_snapshot()
 
     def test_recover_detects_change_during_backup(self):
         self.prepare(); config = self.esp / "limine.conf"
@@ -341,7 +417,7 @@ class RecoveryTest(unittest.TestCase):
         with mock.patch.object(recovery.os, "replace", side_effect=replace_then_edit):
             with self.assertRaises(recovery.Failure): recovery.recover()
         self.assertIn("external recover commit change", config.read_text())
-        recovery.snapshot()
+        recovery.load_owned_snapshot()
 
     def test_remove_detects_change_during_backup(self):
         self.prepare(); config = self.esp / "limine.conf"; original_bytes = config.read_bytes()
@@ -355,7 +431,7 @@ class RecoveryTest(unittest.TestCase):
         with mock.patch.object(recovery, "file_identity", side_effect=inject):
             with self.assertRaises(recovery.Failure): recovery.remove()
         self.assertIn("external remove change", config.read_text())
-        recovery.snapshot()
+        recovery.load_owned_snapshot()
 
     def test_remove_detects_change_after_replace_and_preserves_external_bytes(self):
         self.prepare(); config = self.esp / "limine.conf"
@@ -367,7 +443,7 @@ class RecoveryTest(unittest.TestCase):
         with mock.patch.object(recovery.os, "replace", side_effect=replace_then_edit):
             with self.assertRaises(recovery.Failure): recovery.remove()
         self.assertIn("external commit change", config.read_text())
-        recovery.snapshot()
+        recovery.load_owned_snapshot()
 
     def test_remove_cleanup_failure_is_committed_and_residue_is_reported(self):
         for point in ("remove-detached-payload", "remove-detached-state", "remove-config-backup"):
@@ -452,6 +528,103 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), before_manifest)
         self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, before_payload)
 
+    def test_remove_rejects_every_unusable_normal_payload_without_writes(self):
+        config = self.esp / "limine.conf"
+
+        def reset_owned():
+            for path in (recovery.STATE(), self.esp / "omen-acpi-stock-recovery",
+                         self.root / "var/lib/omen-acpi-s5-test"):
+                if path.is_symlink() or path.is_file(): path.unlink()
+                elif path.exists(): shutil.rmtree(path)
+            for name, content in (("vmlinuz-linux-cachyos", b"stock-kernel\0exact"),
+                                  ("initramfs-linux-cachyos.img", b"stock-initramfs-one"),
+                                  ("cpu-ucode.img", b"stock-initramfs-two")):
+                path = self.esp / name
+                if path.is_symlink() or path.exists(): path.unlink()
+                path.write_bytes(content)
+            self.lsinitcpio.write_text("#!/bin/sh\nprintf '%s\\n' usr/bin/init\n")
+            config.write_text(self.original)
+            self.prepare()
+
+        cases = ("kernel-missing", "module-missing", "kernel-symlink", "module-symlink",
+                 "hard-link", "traversal", "absolute", "marker", "variant-path",
+                 "acpi-override", "managed-hash")
+        for case in cases:
+            with self.subTest(case=case):
+                reset_owned(); expected = self.owned_bytes()
+                kernel = self.esp / "vmlinuz-linux-cachyos"
+                module = self.esp / "initramfs-linux-cachyos.img"
+                if case == "kernel-missing":
+                    kernel.unlink()
+                elif case == "module-missing":
+                    module.unlink()
+                elif case == "kernel-symlink":
+                    kernel.unlink(); kernel.symlink_to("cpu-ucode.img")
+                elif case == "module-symlink":
+                    module.unlink(); module.symlink_to("cpu-ucode.img")
+                elif case == "hard-link":
+                    kernel.unlink(); os.link(self.esp / "cpu-ucode.img", kernel)
+                elif case == "traversal":
+                    config.write_text(self.original.replace(
+                        "boot():/vmlinuz-linux-cachyos", "boot():/../vmlinuz-linux-cachyos"))
+                    expected = (config.read_bytes(), expected[1], expected[2])
+                elif case == "absolute":
+                    config.write_text(self.original.replace(
+                        "boot():/vmlinuz-linux-cachyos", "/boot/vmlinuz-linux-cachyos"))
+                    expected = (config.read_bytes(), expected[1], expected[2])
+                elif case == "marker":
+                    config.write_text(self.original.replace("quiet splash", "quiet splash omen_acpi.variant=s5"))
+                    expected = (config.read_bytes(), expected[1], expected[2])
+                elif case == "variant-path":
+                    variant = self.esp / "omen-acpi-s5.img"; variant.write_bytes(b"variant")
+                    config.write_text(self.original.replace(
+                        "boot():/initramfs-linux-cachyos.img", "boot():/omen-acpi-s5.img"))
+                    expected = (config.read_bytes(), expected[1], expected[2])
+                elif case == "acpi-override":
+                    self.lsinitcpio.write_text(
+                        "#!/bin/sh\nprintf '%s\\n' kernel/firmware/acpi/DSDT.aml\n")
+                elif case == "managed-hash":
+                    managed = self.root / "var/lib/omen-acpi-s5-test"; managed.mkdir(mode=0o700)
+                    (managed / "initramfs.img").write_bytes(module.read_bytes())
+                    (managed / "initramfs.sha256").write_text(recovery.sha(module) + "\n")
+                with self.assertRaises(recovery.Failure): recovery.remove()
+                self.assert_owned_bytes(expected)
+
+    def test_remove_detects_normal_payload_change_during_validation(self):
+        self.prepare(); expected = self.owned_bytes()
+        module = self.esp / "initramfs-linux-cachyos.img"
+        original_sha = recovery.sha
+        changed = False
+
+        def change_after_hash(path):
+            nonlocal changed
+            digest = original_sha(path)
+            if Path(path) == module and not changed:
+                changed = True
+                module.write_bytes(module.read_bytes() + b"changed")
+            return digest
+
+        with mock.patch.object(recovery, "sha", side_effect=change_after_hash):
+            with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assert_owned_bytes(expected)
+
+    def test_remove_revalidates_normal_payload_immediately_before_commit(self):
+        self.prepare(); expected = self.owned_bytes()
+        original_validate = recovery.validate_normal_source
+        calls = 0
+
+        def change_between_validations(text, esp):
+            nonlocal calls
+            calls += 1
+            result = original_validate(text, esp)
+            if calls == 1:
+                (self.esp / "initramfs-linux-cachyos.img").write_bytes(b"changed-after-first-validation")
+            return result
+
+        with mock.patch.object(recovery, "validate_normal_source", side_effect=change_between_validations):
+            with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assert_owned_bytes(expected)
+
     def test_remove_owned_current_and_legacy_snapshots_with_valid_normal_entry(self):
         for version in ("2.1.11", "2.1.10"):
             with self.subTest(version=version):
@@ -464,6 +637,25 @@ class RecoveryTest(unittest.TestCase):
                 self.assertEqual((self.esp / "limine.conf").read_text(), self.original)
                 self.assertFalse(recovery.STATE().exists())
                 self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
+
+    def test_remove_current_and_legacy_does_not_require_stock_boot_or_current_bios(self):
+        for version in ("2.1.11", "2.1.10"):
+            for boot in ("s5", "combined"):
+                with self.subTest(version=version, boot=boot):
+                    data = self.prepare()
+                    if version == "2.1.10": data = self.rewrite_snapshot()
+                    config = self.esp / "limine.conf"
+                    config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
+                    (self.root / "sys/class/dmi/id/bios_version").write_text("F.99\n")
+                    with mock.patch.object(recovery, "machine") as machine_check, \
+                         mock.patch.object(recovery, "probe", return_value={
+                             "STATE": boot, "CLEAN": "0", "DSDT_REVISION": "changed"
+                         }) as boot_probe:
+                        recovery.remove()
+                    machine_check.assert_not_called()
+                    boot_probe.assert_not_called()
+                    self.assertEqual(config.read_text(), self.original)
+                    (self.root / "sys/class/dmi/id/bios_version").write_text("F.13\n")
 
     def test_detailed_status_is_read_only_and_reports_required_fields(self):
         self.prepare()
