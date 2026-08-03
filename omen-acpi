@@ -292,6 +292,7 @@ EOF
             ;;
         stock-recovery)
             cat <<'EOF'
+mkinitcpio|lsinitcpio
 util-linux|flock findmnt
 python|python3
 coreutils|sha256sum realpath stat cp mv sync
@@ -759,7 +760,7 @@ prepare_stock_recovery_interactive() {
     fi
     section "Create or refresh preventive recovery snapshot"
     printf 'This will copy the verified stock kernel and initramfs into a reserved directory on the ESP\n'
-    printf 'and write its authenticated manifest under /var/lib. No Limine default is changed.\n\n'
+    printf 'and write its root-owned integrity-checked manifest under /var/lib. No Limine default is changed.\n\n'
     confirm_dangerous "Create or refresh the preventive recovery snapshot?" no || return 0
     prepare_stock_recovery
 }
@@ -790,6 +791,12 @@ recover_stock() {
     ensure_admin
     local preview
     preview="$("$SUDO_BIN" -- "$STOCK_RECOVERY" status 2>/dev/null || true)"
+    if grep -Fxq $'SNAPSHOT\trefresh-required' <<<"$preview"; then
+        if grep -Fxq $'NORMAL_ENTRY\tavailable' <<<"$preview"; then
+            die "The 2.1.10 recovery snapshot is untrusted for boot. Reboot through the normal stock entry, then refresh it from a clean stock boot."
+        fi
+        die "The 2.1.10 recovery snapshot is untrusted and the normal stock entry is unavailable. Automatic recovery is blocked; use external recovery media."
+    fi
     if grep -Fxq $'NORMAL_ENTRY\tmissing' <<<"$preview" \
         && grep -Fxq $'SNAPSHOT\tvalid' <<<"$preview"; then
         printf 'The normal stock entry is missing. The managed %s entry will be created\n' \
@@ -821,7 +828,8 @@ remove_stock_recovery() {
     ensure_dependencies stock-recovery
     section "Remove managed stock recovery"
     printf 'This removes only the owned zz-omen-acpi-stock-recovery entry, its copied payloads,\n'
-    printf 'and its verified manifest. Existing normal and experimental entries are not edited.\n\n'
+    printf 'and its integrity-checked manifest. A valid normal linux-cachyos entry is required.\n'
+    printf 'Existing normal and experimental entries are not edited.\n\n'
     confirm_dangerous "Remove the managed recovery snapshot and entry?" no || return 0
     ensure_admin
     "$SUDO_BIN" -- "$STOCK_RECOVERY" remove
@@ -845,7 +853,7 @@ show_stock_recovery_details() {
         $1 == "SNAPSHOT_VERSION" { print "Snapshot version: " $2 }
         $1 == "KERNEL" { print "Saved kernel: " $2 }
         $1 == "MODULES" { print "Saved modules: " $2 }
-        $1 == "HASHES" { print "Snapshot hashes: " $2 }
+        $1 == "HASHES" { print "Snapshot integrity/trust: " $2 }
         $1 == "NORMAL_ENTRY" { print "Normal stock entry: " $2 }
         $1 == "RECOVERY_ENTRY" { print "Managed recovery entry: " $2 }
         $1 == "RECOMMENDATION" { print "Recommended action: " $2 }
@@ -874,7 +882,8 @@ stock_recovery_menu() {
         printf '     This requires a clean stock boot.\n\n'
         printf '  2. Recover or reboot into a stock boot\n'
         printf '     Use the normal entry when available.\n'
-        printf '     If it is missing, recreate the managed recovery entry from a valid snapshot.\n\n'
+        printf '     Only a valid 2.1.11 snapshot can recreate a missing recovery entry.\n'
+        printf '     A refresh-required 2.1.10 snapshot is never used for automatic recovery.\n\n'
         printf '  3. Show detailed recovery status\n\n'
         printf '  4. Remove the managed recovery snapshot and entry\n\n'
         printf '  b. Back\n\n'

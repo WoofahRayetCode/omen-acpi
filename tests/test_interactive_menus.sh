@@ -12,6 +12,9 @@ source "$ROOT/omen-acpi"
 fail() { printf 'interactive regression failure: %s\n' "$*" >&2; exit 1; }
 contains() { grep -Fq -- "$2" <<<"$1" || fail "$3"; }
 
+dependency_specifications stock-recovery | grep -Fxq 'mkinitcpio|lsinitcpio' \
+    || fail "stock-recovery dependency profile omits lsinitcpio"
+
 choose() {
     local input="$1" rc=0
     SETUP_VARIANT_RESULT='sentinel'
@@ -117,6 +120,17 @@ b')"
 [[ "$(grep -c 'Stock boot and recovery' <<<"$invalid_menu")" -eq 2 ]] || fail "invalid recovery input did not redraw menu"
 [[ ! -s "$work/menu-actions" ]] || fail "invalid recovery input ran an action"
 
+stock_recovery_status() {
+    printf 'SNAPSHOT\trefresh-required\nNORMAL_ENTRY\tavailable\nRECOVERY_ENTRY\tlegacy-untrusted\n'
+}
+refresh_menu="$(stock_recovery_menu <<<b)"
+contains "$refresh_menu" 'Preventive snapshot: refresh-required' \
+    "recovery menu hid the legacy refresh requirement"
+contains "$refresh_menu" 'Managed recovery entry: legacy-untrusted' \
+    "recovery menu described a legacy entry as available"
+contains "$refresh_menu" 'A refresh-required 2.1.10 snapshot is never used' \
+    "recovery menu proposed automatic legacy recovery"
+
 grep -Fq "printf '  %br.%b Stock boot and recovery" "$ROOT/omen-acpi" || fail "r is not a stable recovery menu entry"
 grep -Fq 'r|R) stock_recovery_menu' "$ROOT/omen-acpi" || fail "r does not always open the recovery submenu"
 grep -Fq 'p|P) ( pending_workflow_action' "$ROOT/omen-acpi" || fail "pending workflow is not separated as p"
@@ -126,6 +140,8 @@ grep -Fq 'confirm_dangerous "Create or restore the managed stock recovery entry?
     || fail "recovery entry creation lacks confirmation"
 grep -Fq 'confirm_dangerous "Remove the managed recovery snapshot and entry?' "$ROOT/omen-acpi" \
     || fail "recovery removal lacks confirmation"
+grep -Fq "SNAPSHOT\\trefresh-required" "$ROOT/omen-acpi" \
+    || fail "frontend does not block automatic recovery from refresh-required snapshots"
 
 for command in prepare-stock-recovery recover-stock reboot-stock remove-stock-recovery resume; do
     OMEN_ACPI_TESTING=1 OMEN_ACPI_SOURCE_ONLY=0 "$ROOT/omen-acpi" --plain --help | grep -Fq "omen-acpi $command" \

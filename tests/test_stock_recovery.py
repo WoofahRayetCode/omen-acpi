@@ -74,6 +74,22 @@ class RecoveryTest(unittest.TestCase):
         recovery.prepare()
         return recovery.snapshot()
 
+    def rewrite_snapshot(self, version="2.1.10", hostile_module=False):
+        manifest = recovery.STATE() / "manifest.json"
+        data = json.loads(manifest.read_text())
+        data["toolkit_version"] = version
+        if hostile_module:
+            payload = self.esp / "omen-acpi-stock-recovery/module-001.bin"
+            payload.write_bytes(b"synthetic legacy initramfs with ACPI override")
+            item = next(entry for entry in data["payloads"] if entry["name"] == "module-001.bin")
+            item["size"] = payload.stat().st_size
+            item["sha256"] = recovery.sha(payload)
+        canonical = json.dumps({key: value for key, value in data.items() if key != "snapshot_id"},
+                               sort_keys=True, separators=(",", ":")).encode()
+        data["snapshot_id"] = recovery.hashlib.sha256(canonical).hexdigest()
+        manifest.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        return data
+
     def test_prepare_exact_payloads_manifest_and_order(self):
         data = self.prepare()
         payload = self.esp / "omen-acpi-stock-recovery"
@@ -143,15 +159,48 @@ class RecoveryTest(unittest.TestCase):
         with self.assertRaises(recovery.Failure): recovery.snapshot()
 
     def test_valid_2_1_10_snapshot_can_be_verified_and_refreshed(self):
-        self.prepare(); manifest = recovery.STATE() / "manifest.json"
-        data = json.loads(manifest.read_text()); data["toolkit_version"] = "2.1.10"
-        canonical = json.dumps({key: value for key, value in data.items() if key != "snapshot_id"},
-                               sort_keys=True, separators=(",", ":")).encode()
-        data["snapshot_id"] = recovery.hashlib.sha256(canonical).hexdigest()
-        manifest.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        self.prepare(); data = self.rewrite_snapshot()
         self.assertEqual(recovery.snapshot()["toolkit_version"], "2.1.10")
+        with self.assertRaises(recovery.Failure): recovery.trusted_snapshot()
+        output = io.StringIO()
+        with redirect_stdout(output): recovery.status()
+        self.assertIn("SNAPSHOT\trefresh-required", output.getvalue())
+        self.assertIn("HASHES\tintegrity-checked-only; stock provenance untrusted", output.getvalue())
+        self.assertIn("Refresh the untrusted 2.1.10 snapshot", output.getvalue())
+        config = self.esp / "limine.conf"
+        config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
+        output = io.StringIO()
+        with redirect_stdout(output): recovery.status()
+        self.assertIn("RECOVERY_ENTRY\tlegacy-untrusted", output.getvalue())
+        config.write_text(self.original)
         recovery.prepare()
         self.assertEqual(recovery.snapshot()["toolkit_version"], "2.1.11")
+        output = io.StringIO()
+        with redirect_stdout(output): recovery.status()
+        self.assertIn("SNAPSHOT\tvalid", output.getvalue())
+
+    def test_self_consistent_hostile_2_1_10_snapshot_is_never_boot_trusted(self):
+        self.prepare(); data = self.rewrite_snapshot(hostile_module=True)
+        self.lsinitcpio.write_text("#!/bin/sh\nprintf '%s\\n' kernel/firmware/acpi/DSDT.aml\n")
+        hostile = self.esp / "omen-acpi-stock-recovery/module-001.bin"
+        with self.assertRaises(recovery.Failure):
+            recovery.inspect_source_initramfs(hostile, set())
+        self.assertEqual(recovery.snapshot()["snapshot_id"], data["snapshot_id"])
+        with self.assertRaises(recovery.Failure): recovery.trusted_snapshot()
+        config = self.esp / "limine.conf"
+        without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
+        config.write_text(without_normal); before = config.read_bytes()
+        with self.assertRaises(recovery.Failure): recovery.recover()
+        self.assertEqual(config.read_bytes(), before)
+        proc = self.root / "proc"; proc.mkdir()
+        (proc / "cmdline").write_text(f"quiet omen_acpi.stock_recovery={data['snapshot_id']}\n")
+        with self.assertRaises(recovery.Failure): recovery.active()
+        output = io.StringIO()
+        with redirect_stdout(output): recovery.status()
+        self.assertIn("SNAPSHOT\trefresh-required", output.getvalue())
+        self.assertNotIn("SNAPSHOT\tvalid", output.getvalue())
+        self.assertIn("Automatic recovery is blocked", output.getvalue())
+        self.assertEqual(config.read_bytes(), before)
 
     def setUp_snapshot_again_after_tamper(self):
         shutil.rmtree(recovery.STATE())
@@ -364,6 +413,57 @@ class RecoveryTest(unittest.TestCase):
         no_normal = self.original[:self.original.index("/Linux-CachyOS")] + "/zz-omen-acpi-s5-test\n protocol: linux\n kernel_path: boot():/x\n module_path: boot():/y\n"
         config.write_text(no_normal)
         with self.assertRaises(recovery.Failure): recovery.remove()
+
+    def test_remove_requires_normal_entry_even_without_variants(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
+        config.write_text(without_normal)
+        before_config = config.read_bytes()
+        before_manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        payload = self.esp / "omen-acpi-stock-recovery"
+        before_payload = {path.name: path.read_bytes() for path in payload.iterdir()}
+        with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assertEqual(config.read_bytes(), before_config)
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), before_manifest)
+        self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, before_payload)
+
+    def test_remove_requires_unambiguous_normal_entry(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        duplicate = self.original[self.original.index("/Linux-CachyOS"):self.original.index("/User rescue")]
+        config.write_text(self.original + duplicate); before = config.read_bytes()
+        manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        payload = self.esp / "omen-acpi-stock-recovery"
+        payload_bytes = {path.name: path.read_bytes() for path in payload.iterdir()}
+        with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assertEqual(config.read_bytes(), before)
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest)
+        self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, payload_bytes)
+
+    def test_remove_requires_normal_entry_with_exact_recovery_entry(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
+        config.write_text(without_normal); recovery.recover()
+        before_config = config.read_bytes()
+        before_manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        payload = self.esp / "omen-acpi-stock-recovery"
+        before_payload = {path.name: path.read_bytes() for path in payload.iterdir()}
+        with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assertEqual(config.read_bytes(), before_config)
+        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), before_manifest)
+        self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, before_payload)
+
+    def test_remove_owned_current_and_legacy_snapshots_with_valid_normal_entry(self):
+        for version in ("2.1.11", "2.1.10"):
+            with self.subTest(version=version):
+                data = self.prepare()
+                if version == "2.1.10": data = self.rewrite_snapshot()
+                (self.esp / "limine.conf").write_text(
+                    self.original + "\n" + recovery.owned_block(data) + "\n"
+                )
+                recovery.remove()
+                self.assertEqual((self.esp / "limine.conf").read_text(), self.original)
+                self.assertFalse(recovery.STATE().exists())
+                self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
 
     def test_detailed_status_is_read_only_and_reports_required_fields(self):
         self.prepare()

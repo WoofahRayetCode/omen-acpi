@@ -24,8 +24,15 @@
   persistence and does not create `~/.local/bin` or invoke the installer.
 - Release construction, updater verification and consistency tests now include
   the Python stock-recovery manager's `2.1.11` version declaration.
-- Pinned actions/checkout v7.0.0 to its full official commit SHA, retained
+- Pinned actions/checkout v7.0.1 to its full official commit SHA, retained
   read-only workflow permissions and added private security-reporting guidance.
+- Treats structurally intact 2.1.10 recovery snapshots as
+  `refresh-required`, never as boot-trusted: they may be ownership-checked for
+  safe refresh/removal but cannot create or validate a recovery boot entry.
+- Recovery snapshot removal now always requires one unambiguous, structurally
+  valid normal `linux-cachyos` entry, even when no experimental variants exist.
+- Added `lsinitcpio` to the stock-recovery dependency profile used by the
+  standalone preparation command.
 - Hardware checks remain restricted to the documented reference configuration.
   Broader hardware support remains future design work and is not available.
 

@@ -25,7 +25,7 @@ import sys
 import tempfile
 
 VERSION = "2.1.11"
-SUPPORTED_SNAPSHOT_VERSIONS = {VERSION, "2.1.10"}
+OWNED_SNAPSHOT_VERSIONS = {VERSION, "2.1.10"}
 SCHEMA = 1
 ENTRY = "zz-omen-acpi-stock-recovery"
 BEGIN = "# BEGIN OMEN-ACPI OWNED STOCK RECOVERY v1"
@@ -360,6 +360,7 @@ def restore_config_if_unchanged(config: Path, backup: Path, installed: bytes) ->
 
 
 def snapshot() -> dict:
+    """Verify ownership, schema and byte integrity, but not recovery trust."""
     state = STATE()
     secure_dir(state)
     manifest_path = state / "manifest.json"
@@ -374,7 +375,7 @@ def snapshot() -> dict:
                 "kernel_version", "normalized_entry", "original_kernel_path", "original_module_paths",
                 "command_line", "payload_root", "payloads", "stock_boot_verified", "snapshot_id"}
     if (set(data) != required or data["schema"] != SCHEMA
-            or data["toolkit_version"] not in SUPPORTED_SNAPSHOT_VERSIONS
+            or data["toolkit_version"] not in OWNED_SNAPSHOT_VERSIONS
             or data["stock_boot_verified"] is not True):
         raise Failure("recovery manifest schema or provenance is invalid")
     if tuple(data["machine"][key] for key in ("product", "board", "bios")) != EXPECTED:
@@ -397,6 +398,17 @@ def snapshot() -> dict:
     canonical_json = json.dumps({key: value for key, value in data.items() if key != "snapshot_id"}, sort_keys=True, separators=(",", ":")).encode()
     if hashlib.sha256(canonical_json).hexdigest() != data["snapshot_id"]:
         raise Failure("recovery metadata was modified")
+    return data
+
+
+def trusted_snapshot() -> dict:
+    """Return only snapshots created with the content checks in 2.1.11."""
+    data = snapshot()
+    if data["toolkit_version"] != VERSION:
+        raise Failure(
+            "the recovery snapshot was created by 2.1.10 and is integrity-checked "
+            "but untrusted for boot; refresh it from a clean stock boot"
+        )
     return data
 
 
@@ -512,7 +524,7 @@ def recover() -> None:
     if normal is not None:
         print(f"NORMAL\t{normal['title']}")
         return
-    data = snapshot()
+    data = trusted_snapshot()
     parsed = entries(text)
     reserved = [item for item in parsed if item["title"] == ENTRY]
     if len(reserved) > 1:
@@ -557,7 +569,7 @@ def active() -> None:
     state = probe()
     if state.get("STATE") != "stock" or state.get("CLEAN") != "1" or state.get("DSDT_REVISION") != STOCK_REVISION:
         raise Failure("stock recovery marker cannot override a non-stock DSDT classification")
-    data = snapshot()
+    data = trusted_snapshot()
     cmdline = rooted("/proc/cmdline").read_text(encoding="utf-8").split()
     markers = [item.split("=", 1)[1] for item in cmdline if item.startswith("omen_acpi.stock_recovery=")]
     if markers != [data["snapshot_id"]]:
@@ -570,11 +582,15 @@ def remove() -> None:
     esp = esp_path(); config = esp / "limine.conf"
     original_bytes = config.read_bytes(); before_identity = file_identity(config, original_bytes)
     text = original_bytes.decode("utf-8", errors="strict")
+    try:
+        normal = normal_entry(text, required=True)
+    except Failure as error:
+        raise Failure(
+            "recovery removal requires one valid normal linux-cachyos entry; "
+            "restore a verifiable stock entry before removing the snapshot"
+        ) from error
+    assert normal is not None
     data = snapshot(); block = owned_block(data)
-    normal = normal_entry(text, required=False)
-    variants = any(item["title"] in ("zz-omen-acpi-s5-test", "zz-omen-acpi-combined-test") for item in entries(text))
-    if normal is None and variants:
-        raise Failure("recovery removal blocked: it is the only remaining stock boot path while experimental variants exist")
     reserved = [item for item in entries(text) if item["title"] == ENTRY]
     if len(reserved) > 1 or text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
         raise Failure("reserved recovery ownership markers are ambiguous")
@@ -675,8 +691,11 @@ def status() -> None:
         else:
             try:
                 data = snapshot()
-                snapshot_state = "valid"
-                if normal is not None:
+                if data["toolkit_version"] == VERSION:
+                    snapshot_state = "valid"
+                else:
+                    snapshot_state = "refresh-required"
+                if normal is not None and snapshot_state == "valid":
                     kernel_value, _command, modules = boot_fields(normal)
                     sources = [limine_local(kernel_value, esp)[0], *[limine_local(item, esp)[0] for item in modules]]
                     stored = data["payloads"]
@@ -691,7 +710,12 @@ def status() -> None:
         elif len(reserved) != 1 or text.count(BEGIN) != 1 or text.count(END) != 1 or data is None:
             recovery_state = "modified"
         else:
-            recovery_state = "available" if text.count(owned_block(data)) == 1 else "modified"
+            if text.count(owned_block(data)) != 1:
+                recovery_state = "modified"
+            elif data["toolkit_version"] == VERSION:
+                recovery_state = "available"
+            else:
+                recovery_state = "legacy-untrusted"
     except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError):
         pass
 
@@ -699,6 +723,12 @@ def status() -> None:
         recommendation = "Choose option 1 to create the preventive snapshot."
     elif boot == "stock" and snapshot_state == "valid":
         recommendation = "A valid snapshot is available; refreshing it is optional."
+    elif boot == "stock" and snapshot_state == "refresh-required" and normal_state == "available":
+        recommendation = "Refresh the untrusted 2.1.10 snapshot now from this clean stock boot."
+    elif snapshot_state == "refresh-required" and normal_state == "available":
+        recommendation = "Boot the normal stock entry, then refresh the untrusted 2.1.10 snapshot."
+    elif snapshot_state == "refresh-required" and normal_state != "available":
+        recommendation = "Automatic recovery is blocked; restore a normal stock entry with external recovery media."
     elif boot in ("s5", "combined") and normal_state == "available":
         recommendation = "Choose option 2 to reboot using the normal stock entry."
     elif boot in ("s5", "combined") and normal_state == "missing" and snapshot_state in ("valid", "stale"):
@@ -718,7 +748,13 @@ def status() -> None:
     emit("SNAPSHOT_VERSION", data["toolkit_version"] if data else "unavailable")
     emit("KERNEL", f"{data['kernel_version']} ({data['original_kernel_path']})" if data else "unavailable")
     emit("MODULES", len(data["original_module_paths"]) if data else 0)
-    emit("HASHES", "verified" if data and snapshot_state in ("valid", "stale") else "unavailable")
+    if data and snapshot_state == "refresh-required":
+        hashes = "integrity-checked-only; stock provenance untrusted"
+    elif data and snapshot_state in ("valid", "stale"):
+        hashes = "verified stock snapshot"
+    else:
+        hashes = "unavailable"
+    emit("HASHES", hashes)
     emit("NORMAL_ENTRY", normal_state)
     emit("RECOVERY_ENTRY", recovery_state)
     emit("RECOMMENDATION", recommendation)

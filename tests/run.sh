@@ -917,6 +917,23 @@ grep -Fq 'ORIGINAL_DSDT_SHA256=%s' "$ROOT/scripts/02-build-dsdt.sh" \
     || fail "builder fingerprint propagation"
 grep -Fq 'different stock DSDT' "$ROOT/scripts/03-manage-limine-entry.sh" \
     || fail "manager stock DSDT fingerprint check"
+python3 - "$ROOT/omen-acpi" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'^prepare_stock_recovery\(\) \{\n(?P<body>.*?)^\}', source,
+                  flags=re.MULTILINE | re.DOTALL)
+if match is None:
+    raise SystemExit("prepare_stock_recovery function is missing")
+body = match.group("body")
+dependency = body.find("ensure_dependencies stock-recovery")
+administrator = body.find("ensure_admin")
+execution = body.find('"$SUDO_BIN" -- "$STOCK_RECOVERY" prepare')
+if min(dependency, administrator, execution) < 0 or not dependency < administrator < execution:
+    raise SystemExit("standalone stock preparation does not check dependencies before sudo execution")
+PY
 
 printf 'partial-installation repair checks...\n'
 install_help="$("$ROOT/install.sh" --help)"

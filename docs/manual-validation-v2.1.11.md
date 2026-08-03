@@ -35,3 +35,9 @@ documented HP OMEN MAX 16-ap0006sl reference machine, with board `8E35`, BIOS
 10. Only after these checks, install S5 and Combined independently and verify
     their transformations and OEM revisions remain `0x0107200A` and
     `0x0107200B`; return to stock between tests and exercise removal separately.
+11. With a synthetic, ownership-valid 2.1.10 snapshot, confirm status reports
+    `refresh-required`, recovery boot creation and active recognition are
+    blocked, and a clean stock boot refreshes it to a trusted 2.1.11 snapshot.
+12. Remove current and legacy owned snapshots only while one valid normal
+    `linux-cachyos` entry exists. Repeat with that entry missing and ambiguous;
+    confirm configuration, manifest and payload bytes remain unchanged.

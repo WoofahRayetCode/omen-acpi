@@ -115,6 +115,9 @@ The normalized transformations are documented in
 
 Download the release assets, verify both checksum layers, then install:
 
+The v2.1.11 URLs below are intentionally prepared for the future audited
+Release; no v2.1.11 tag or GitHub Release is created by this development step.
+
 ```bash
 curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.11/omen-acpi-toolkit-v2.1.11.tar.gz
 ```
@@ -282,9 +285,9 @@ no default action:
 Stock boot and recovery
 
 Current boot: <current state>
-Preventive snapshot: <valid, missing, stale, modified or unavailable>
+Preventive snapshot: <valid, refresh-required, missing, stale, modified or unavailable>
 Normal stock entry: <available, missing, ambiguous or unavailable>
-Managed recovery entry: <available, missing, modified or unavailable>
+Managed recovery entry: <available, legacy-untrusted, missing, modified or unavailable>
 
   1. Create or refresh the preventive recovery snapshot
   2. Recover or reboot into a stock boot
@@ -342,11 +345,21 @@ programs that do not honor that advisory lock can still race after the final
 check, so post-replacement byte verification remains fail-closed and preserves
 foreign bytes rather than rolling them back.
 
+Snapshots created by toolkit 2.1.10 are ownership- and integrity-checked only
+so that toolkit-owned files can be refreshed or removed safely. They are shown
+as `refresh-required` and are never trusted for automatic recovery because
+2.1.10 did not inspect initramfs contents before snapshot creation. If the
+normal `linux-cachyos` entry exists, boot it and recreate the snapshot from a
+clean verified stock boot. If that entry has already disappeared, the 2.1.10
+snapshot is not used and external recovery media is required. Removal of either
+a current or legacy owned snapshot always requires one unambiguous, structurally
+valid normal `linux-cachyos` entry.
+
 The recovery entry includes a snapshot-bound marker. The dashboard displays
-`STOCK RECOVERY ACTIVE` only when that marker matches a valid manifest and all
-payload hashes, while the active DSDT is independently classified as clean
-stock revision `0x01072009`. A marker can never mask S5, Combined or an unknown
-DSDT.
+`STOCK RECOVERY ACTIVE` only when that marker matches a root-owned,
+integrity-checked 2.1.11 manifest and all payload hashes, while the active DSDT
+is independently classified as clean stock revision `0x01072009`. A marker can
+never mask S5, Combined or an unknown DSDT.
 
 This is preventive recovery, not reconstruction. For an upgrade from 2.1.9,
 prepare the snapshot while `linux-cachyos` still exists. If currently booted in
