@@ -10,7 +10,7 @@ export PATH="/usr/bin:/bin"
 # Manage separate S5-only and combined Limine entries for the exact reference
 # machine. The normal CachyOS entry is never replaced.
 
-readonly VERSION="2.1.9"
+readonly VERSION="2.1.10"
 readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
 readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -2570,13 +2570,14 @@ pre_uninstall_check_action() {
 
     for entry_name in \
         zz-omen-acpi-s5-test \
-        zz-omen-acpi-combined-test; do
+        zz-omen-acpi-combined-test \
+        zz-omen-acpi-stock-recovery; do
         if grep -Fq -- "$entry_name" "$config"; then
             die "Reserved Limine entry is still present: $entry_name"
         fi
     done
 
-    log "Pre-uninstall check passed: both reserved Limine entry names are absent."
+    log "Pre-uninstall check passed: all reserved Limine entry names are absent."
 }
 
 main() {

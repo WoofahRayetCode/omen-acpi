@@ -609,6 +609,7 @@ required_release_files = {
     "install.sh",
     "omen-acpi",
     "scripts/03-manage-limine-entry.sh",
+    "scripts/04-stock-recovery.py",
 }
 if not required_release_files.issubset(release_files):
     missing = sorted(required_release_files - set(release_files))

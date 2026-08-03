@@ -117,9 +117,9 @@ fi
 exec 9>>"$LOCK_FILE"
 flock -x 9 || die "Could not acquire the OMEN ACPI installation lock."
 
-for state in /var/lib/omen-acpi-s5-test /var/lib/omen-acpi-combined-test; do
+for state in /var/lib/omen-acpi-s5-test /var/lib/omen-acpi-combined-test /var/lib/omen-acpi-stock-recovery; do
     [[ ! -e "$state" && ! -L "$state" ]] \
-        || die "Managed state still exists at $state. Remove the corresponding entry with omen-acpi first."
+        || die "Managed state still exists at $state. Remove it with omen-acpi first; stock recovery is never deleted implicitly."
 done
 for dropin in \
     /etc/limine-entry-tool.d/90-omen-acpi-s5-test.conf \

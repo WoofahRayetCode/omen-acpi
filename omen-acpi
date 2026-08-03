@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.1.9"
+readonly VERSION="2.1.10"
 readonly APP_NAME="OMEN ACPI Toolkit"
 readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 readonly EXPECTED_BOARD="8E35"
@@ -33,6 +33,7 @@ readonly PROBE="$APP_ROOT/scripts/00-probe-boot.sh"
 readonly COLLECTOR="$APP_ROOT/scripts/01-collect-acpi.sh"
 readonly BUILDER="$APP_ROOT/scripts/02-build-dsdt.sh"
 readonly MANAGER="$APP_ROOT/scripts/03-manage-limine-entry.sh"
+readonly STOCK_RECOVERY="$APP_ROOT/scripts/04-stock-recovery.py"
 readonly UNINSTALLER="$APP_ROOT/uninstall.sh"
 
 if (( EUID == 0 )) && [[ "${OMEN_ACPI_TESTING:-0}" != "1" ]]; then
@@ -56,6 +57,8 @@ COLOR_ENABLED=0
 UNICODE_ENABLED=0
 ASSUME_YES=0
 PLAIN_MODE=0
+STOCK_RECOVERY_PREPARED=0
+STOCK_RECOVERY_STATUS_LABEL="NOT CHECKED"
 BANNER_VERTICAL='|'
 
 if [[ -t 1 && "${TERM:-dumb}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
@@ -286,6 +289,15 @@ sudo|sudo
 systemd|systemctl
 EOF
             ;;
+        stock-recovery)
+            cat <<'EOF'
+util-linux|flock findmnt
+python|python3
+coreutils|sha256sum realpath stat cp mv sync
+sudo|sudo
+systemd|systemctl
+EOF
+            ;;
         *)
             die "Unknown dependency profile: $profile"
             ;;
@@ -426,6 +438,7 @@ PROBE_LOG_OVERRIDE="unknown"
 PROBE_S5_FORMAT="unknown"
 PROBE_COMBINED_FORMAT="unknown"
 PROBE_ACTIVE_FORMAT="none"
+RECOVERY_ACTIVE=0
 
 parse_probe_output() {
     local output="$1" key value saved_fingerprint=''
@@ -502,6 +515,10 @@ probe_boot() {
     output="$("$SUDO_BIN" -- "$PROBE" --env)" \
         || die "The current ACPI boot state could not be inspected."
     parse_probe_output "$output"
+    if [[ "$PROBE_STATE" == "stock" && "$PROBE_CLEAN" == "1" ]] \
+        && "$SUDO_BIN" -- "$STOCK_RECOVERY" active >/dev/null 2>&1; then
+        RECOVERY_ACTIVE=1
+    fi
 }
 
 probe_boot_if_cached() {
@@ -529,7 +546,9 @@ probe_boot_if_cached() {
 
 boot_state_label() {
     case "$PROBE_STATE" in
-        stock) printf 'STOCK / SAFE' ;;
+        stock)
+            if (( RECOVERY_ACTIVE )); then printf 'STOCK RECOVERY ACTIVE'; else printf 'STOCK / SAFE'; fi
+            ;;
         s5)
             if [[ "$PROBE_ACTIVE_FORMAT" == "legacy" ]]; then
                 printf 'LEGACY S5 ACTIVE'
@@ -711,7 +730,7 @@ require_stock_boot() {
     return 0
 }
 
-stock_boot_recovery() {
+reboot_stock() {
     local resume_action="${1:-}" resume_variant="${2:-}"
     require_supported_machine
     ensure_dependencies probe
@@ -722,6 +741,61 @@ stock_boot_recovery() {
     fi
     ensure_dependencies reboot-stock
     show_stock_reboot_prompt "$resume_action" "$resume_variant"
+}
+
+prepare_stock_recovery() {
+    ensure_dependencies stock-recovery
+    ensure_admin
+    section "Prepare preventive stock recovery"
+    "$SUDO_BIN" -- "$STOCK_RECOVERY" prepare
+    STOCK_RECOVERY_PREPARED=1
+}
+
+stock_recovery_status() {
+    local output
+    if [[ "${OMEN_ACPI_TESTING:-0}" != "1" && -x "$SUDO_BIN" ]] \
+        && "$SUDO_BIN" -n true 2>/dev/null \
+        && output="$("$SUDO_BIN" -n -- "$STOCK_RECOVERY" status 2>/dev/null)"; then
+        printf '%s\n' "$output"
+    else
+        printf 'UNAVAILABLE\tNot checked'
+    fi
+}
+
+recover_stock() {
+    local result kind title
+    probe_boot
+    if [[ "$PROBE_STATE" == "stock" && "$PROBE_CLEAN" == "1" ]]; then
+        success "A clean stock DSDT is already active; no recovery is needed."
+        return 0
+    fi
+    ensure_dependencies stock-recovery
+    ensure_admin
+    result="$("$SUDO_BIN" -- "$STOCK_RECOVERY" recover)" \
+        || die "Automatic stock recovery is unavailable. If no snapshot was prepared before the normal entry disappeared, use external manual recovery media."
+    IFS=$'\t' read -r kind title <<<"$result"
+    case "$kind" in
+        NORMAL)
+            info "The normal stock entry still exists and was not modified."
+            show_stock_reboot_prompt
+            ;;
+        CREATED|READY)
+            section "Stock recovery ready"
+            printf 'At the next Limine menu select exactly:\n\n  %b%s%b\n\n' "$GREEN$BOLD" "$title" "$RESET"
+            printf 'The default entry and every other Limine entry were preserved.\n'
+            if confirm_dangerous "Reboot now to select the stock recovery entry?" no; then
+                "$SUDO_BIN" "$SYSTEMCTL_BIN" reboot || die "systemd could not start the reboot."
+            fi
+            ;;
+        *) die "The stock recovery manager returned an invalid result." ;;
+    esac
+}
+
+remove_stock_recovery() {
+    ensure_dependencies stock-recovery
+    ensure_admin
+    confirm_dangerous "Remove the verified stock recovery entry, payloads and state?" no || return 0
+    "$SUDO_BIN" -- "$STOCK_RECOVERY" remove
 }
 
 write_pointer() {
@@ -1000,6 +1074,9 @@ variant_dashboard_color() {
 
 install_one() {
     local variant="$1" build_archive="${2:-}" schema
+    if (( STOCK_RECOVERY_PREPARED == 0 )); then
+        prepare_stock_recovery
+    fi
     schema="$(inspect_variant_schema "$variant")"
     case "$schema" in
         managed) die "The $variant variant is already installed. Remove it first, then run a fresh install." ;;
@@ -1127,6 +1204,7 @@ status_variants() {
     refine_installation_formats_cached
     section "Current boot"
     printf 'State: %b%s%b\n' "$(boot_state_color)$BOLD" "$(boot_state_label)" "$RESET"
+    printf 'Stock recovery: %s\n' "$(stock_recovery_status | head -n 1)"
     printf 'Active DSDT revision: %s\n' "$PROBE_REVISION"
     printf 'Detection reason: %s\n' "$PROBE_REASON"
 
@@ -1368,7 +1446,7 @@ resume_pending_workflow() {
     description="$(pending_description)"
 
     if pending_is_same_boot; then
-        stock_boot_recovery "$action" "$variant"
+        reboot_stock "$action" "$variant"
         return
     fi
 
@@ -1398,12 +1476,12 @@ recovery_menu_action() {
     if action="$(pending_action 2>/dev/null)"; then
         variant="$(pending_variant 2>/dev/null || true)"
         if pending_is_same_boot; then
-            stock_boot_recovery "$action" "$variant"
+            reboot_stock "$action" "$variant"
         else
             resume_pending_workflow
         fi
     else
-        stock_boot_recovery
+        recover_stock
     fi
 }
 
@@ -1470,6 +1548,9 @@ show_banner() {
     refine_installation_formats_cached
     boot_label="$(boot_state_label)"
     dashboard_line "Current boot" "$PROBE_REVISION" "$boot_label" "$(boot_state_color)"
+    STOCK_RECOVERY_STATUS_LABEL="$(stock_recovery_status | head -n 1)"
+    dashboard_line "Stock recovery" "Preventive snapshot" "$STOCK_RECOVERY_STATUS_LABEL" \
+        "$([[ "$STOCK_RECOVERY_STATUS_LABEL" == VALID$'\t'* ]] && printf '%s' "$GREEN" || printf '%s' "$YELLOW")"
 
     dashboard_line "S5-only" "Limine test entry" \
         "$(variant_dashboard_status s5)" \
@@ -1515,6 +1596,8 @@ recommended_action() {
         fi
     elif [[ "$PROBE_STATE" == "s5" || "$PROBE_STATE" == "combined" ]]; then
         printf 'Reboot into the normal Limine entry before changing an experimental entry.'
+    elif [[ "$PROBE_STATE" == "stock" && "$STOCK_RECOVERY_STATUS_LABEL" != VALID$'\t'* ]]; then
+        printf 'Prepare the preventive stock-recovery snapshot before installing a variant.'
     elif [[ "$PROBE_S5_FORMAT" == "managed" || "$PROBE_COMBINED_FORMAT" == "managed" ]]; then
         printf 'Run status; after a kernel/initramfs update, remove and freshly install each entry.'
     elif [[ "$PROBE_STATE" == "unknown" || "$PROBE_STATE" == "unavailable" ]]; then
@@ -1671,7 +1754,10 @@ Usage:
   omen-acpi artifacts
   omen-acpi logs
   omen-acpi resume
+  omen-acpi prepare-stock-recovery
+  omen-acpi recover-stock
   omen-acpi reboot-stock
+  omen-acpi remove-stock-recovery
   omen-acpi uninstall
   omen-acpi version
 
@@ -1779,7 +1865,20 @@ main() {
         resume) (($# == 0)) || die "Usage: omen-acpi resume"; resume_pending_workflow ;;
         reboot-stock)
             (($# == 0)) || die "Usage: omen-acpi reboot-stock"
-            stock_boot_recovery
+            probe_boot
+            reboot_stock
+            ;;
+        prepare-stock-recovery)
+            (($# == 0)) || die "Usage: omen-acpi prepare-stock-recovery"
+            prepare_stock_recovery
+            ;;
+        recover-stock)
+            (($# == 0)) || die "Usage: omen-acpi recover-stock"
+            recover_stock
+            ;;
+        remove-stock-recovery)
+            (($# == 0)) || die "Usage: omen-acpi remove-stock-recovery"
+            remove_stock_recovery
             ;;
         uninstall) (($# == 0)) || die "Usage: omen-acpi uninstall"; uninstall_toolkit ;;
         version|--version|-V)

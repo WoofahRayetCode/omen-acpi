@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.1.9"
+readonly VERSION="2.1.10"
 readonly TARGET_ROOT="/usr/local/lib/omen-acpi-fix"
 readonly TARGET_BIN="/usr/local/bin/omen-acpi"
 readonly TARGET_DOC="/usr/local/share/doc/omen-acpi-fix"
@@ -224,7 +224,9 @@ release_files=(
     scripts/01-collect-acpi.sh
     scripts/02-build-dsdt.sh
     scripts/03-manage-limine-entry.sh
+    scripts/04-stock-recovery.py
     tests/run.sh
+    tests/test_stock_recovery.py
     tests/test_transform.py
     uninstall.sh
 )
@@ -360,6 +362,9 @@ for script_name in \
         "$source_snapshot/scripts/$script_name" \
         "$app_stage/scripts/$script_name"
 done
+install -o root -g root -m 0755 \
+    "$source_snapshot/scripts/04-stock-recovery.py" \
+    "$app_stage/scripts/04-stock-recovery.py"
 printf '%s\n' "$VERSION" > "$app_stage/VERSION"
 chown root:root "$app_stage/VERSION"
 chmod 0644 "$app_stage/VERSION"

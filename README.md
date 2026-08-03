@@ -116,19 +116,19 @@ The normalized transformations are documented in
 Download the release assets, verify both checksum layers, then install:
 
 ```bash
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.9/omen-acpi-toolkit-v2.1.9.tar.gz
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.10/omen-acpi-toolkit-v2.1.10.tar.gz
 ```
 
 ```bash
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.9/omen-acpi-toolkit-v2.1.9.tar.gz.sha256
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.10/omen-acpi-toolkit-v2.1.10.tar.gz.sha256
 ```
 
 ```bash
-sha256sum -c omen-acpi-toolkit-v2.1.9.tar.gz.sha256
+sha256sum -c omen-acpi-toolkit-v2.1.10.tar.gz.sha256
 ```
 
 ```bash
-tar xzf omen-acpi-toolkit-v2.1.9.tar.gz && cd omen-acpi-toolkit-v2.1.9
+tar xzf omen-acpi-toolkit-v2.1.10.tar.gz && cd omen-acpi-toolkit-v2.1.10
 ```
 
 The archive carries a second, per-file manifest. Verify it too:
@@ -160,7 +160,7 @@ noted inline.
 The default interface is a state-aware dashboard:
 
 ```text
-+ OMEN ACPI Toolkit v2.1.9 ----------------------------------------------+
++ OMEN ACPI Toolkit v2.1.10 ---------------------------------------------+
 |  Machine       8E35 / BIOS F.13      READY                             |
 |  Dependencies  All commands          READY                             |
 |  Current boot  0x01072009            STOCK / SAFE                      |
@@ -175,10 +175,11 @@ Choose **Guided setup**. The CLI will:
 2. find missing dependencies and offer to install them with Pacman;
 3. inspect the currently loaded ACPI state;
 4. require a clean stock boot before collecting firmware source;
-5. privately collect and fingerprint the original DSDT;
-6. build and independently verify the selected variant;
-7. transactionally create a separate Limine test entry;
-8. offer a reboot and tell you exactly which entry to select.
+5. prepare or update a verified preventive stock-boot snapshot;
+6. privately collect and fingerprint the original DSDT;
+7. build and independently verify the selected variant;
+8. transactionally create a separate Limine test entry;
+9. offer a reboot and tell you exactly which entry to select.
 
 The same operations are available as explicit subcommands:
 
@@ -194,7 +195,10 @@ omen-acpi remove <s5|combined|all>
 omen-acpi artifacts
 omen-acpi logs
 omen-acpi resume
+omen-acpi prepare-stock-recovery
+omen-acpi recover-stock
 omen-acpi reboot-stock
+omen-acpi remove-stock-recovery
 omen-acpi uninstall
 ```
 
@@ -215,6 +219,7 @@ one reserved entry per installed variant:
 | your normal CachyOS entry | stock firmware DSDT, unchanged |
 | `zz-omen-acpi-s5-test` | same kernel snapshot, with the `s5` DSDT override |
 | `zz-omen-acpi-combined-test` | same kernel snapshot, with the `combined` DSDT override |
+| `zz-omen-acpi-stock-recovery` | reserved verified copies of the stock kernel and every stock initramfs component |
 
 The experimental entries are additions. The normal entry is never replaced,
 reordered or made non-default, and the toolkit never changes which entry is
@@ -243,6 +248,53 @@ Leave the laptop on a hard surface and confirm that it cools completely. A
 useful stress case is to use the NVIDIA GPU immediately before shutdown and
 compare powered-off battery loss across several repetitions.
 
+## Preventive stock recovery
+
+`omen-acpi prepare-stock-recovery` works only during an exactly supported,
+clean, verified stock boot. It selects one unambiguous normal entry, copies its
+kernel and every `module_path` in order to
+`boot():/omen-acpi-stock-recovery/`, and commits a root-owned manifest under
+`/var/lib/omen-acpi-stock-recovery`. The manifest records schema and toolkit
+versions, creation time, DMI/board/BIOS, stock DSDT revision and SHA-256,
+source title, kernel version, normalized configuration, original paths,
+command line, payload paths and each payload's size and SHA-256. Metadata is
+JSON-parsed without `eval`; filenames are deterministic and never derived from
+the entry title or command line.
+
+Preparation rejects S5, Combined, legacy, unknown and unavailable boots,
+missing or duplicate normal entries, unsafe paths, symlinks, hard links,
+variant/composite initramfs and files that change while copied. Staging and
+`fsync` occur on the destination filesystems, activation uses atomic renames,
+and failures restore the previous complete snapshot without leaving a partial
+one. Guided setup and every variant installation prepare the snapshot before
+installing the variant; a variant boot can never update it.
+
+`omen-acpi recover-stock` has three outcomes:
+
+- on an already clean stock boot, it changes nothing;
+- while the normal entry still exists, it preserves that entry and offers the
+  same explicitly confirmed reboot as `reboot-stock`;
+- if the normal entry is gone, it verifies the complete snapshot and creates
+  only `zz-omen-acpi-stock-recovery`, pointing exclusively at the reserved
+  copies. It preserves all other entries, global settings, comments, order and
+  default, then tells you exactly which entry to select. Reboot still requires
+  explicit confirmation.
+
+The recovery entry includes a snapshot-bound marker. The dashboard displays
+`STOCK RECOVERY ACTIVE` only when that marker matches a valid manifest and all
+payload hashes, while the active DSDT is independently classified as clean
+stock revision `0x01072009`. A marker can never mask S5, Combined or an unknown
+DSDT.
+
+This is preventive recovery, not reconstruction. For an upgrade from 2.1.9,
+prepare the snapshot while `linux-cachyos` still exists. If currently booted in
+a variant, use `omen-acpi reboot-stock`, then prepare it. If the normal entry
+has already disappeared and no new valid snapshot exists, automatic recovery
+is impossible: `limine.conf.before` and a variant initramfs are deliberately
+insufficient, and external manual recovery media is required. Version 2.1.9's
+similarly named dashboard action could only find and offer an existing normal
+entry; it did not create recovery media.
+
 ## Returning to the stock entry
 
 Select your normal CachyOS entry in the bootloader menu. Nothing else is needed:
@@ -259,9 +311,10 @@ If the result is inconsistent or cannot be verified, collection and installation
 fail closed, and the CLI shows a guided blocker naming the exact entry to select.
 It can reboot after confirmation, but it never changes the default entry.
 
-If the system is already running the clean stock DSDT, `omen-acpi reboot-stock`
-reports success without requiring unrelated build dependencies or another
-reboot.
+`omen-acpi reboot-stock` is deliberately narrower than recovery: it only finds
+an existing normal stock entry and offers an explicitly confirmed reboot. It
+never creates or changes an entry. If already running clean stock it reports
+success without rebooting.
 
 ## Removal
 
@@ -287,7 +340,10 @@ omen-acpi uninstall
 ```
 
 The uninstaller refuses to orphan managed Limine entries and preserves private
-user artifacts.
+user artifacts. It also refuses to uninstall while the stock recovery state is
+present: remove it explicitly with `omen-acpi remove-stock-recovery` only after
+a usable normal stock entry exists. Removal is blocked when the recovery entry
+is the only remaining stock path and experimental variants are installed.
 
 ## Updating
 
@@ -335,9 +391,9 @@ stale payload after a system update.
 
 ## Entry lifecycle
 
-The lifecycle is intentionally limited to two state-changing operations: install
-a fresh entry from the current normal CachyOS kernel and initramfs, and remove
-an installed entry after exact ownership checks.
+The variant lifecycle remains limited to fresh install and verified removal.
+The independent recovery lifecycle is prepare (stock boot only), recover
+(create/verify only the reserved entry), and explicit remove.
 
 There is no migration, old-payload restoration or in-place refresh. Those paths
 can accidentally retain a kernel or initramfs from before a system update. A
@@ -398,6 +454,9 @@ sharing.
 | Status reports `CONFLICT / BLOCKED` | State was modified outside the toolkit. Nothing is changed automatically; remove the entry from a stock boot and install a fresh one. |
 | Status reports `LEGACY / REINSTALL` | Remove the entry, then install a fresh managed one. |
 | Status reports a stale kernel/initramfs snapshot | A system update happened. Run `omen-acpi remove all` then `omen-acpi install both`. |
+| Recovery snapshot is unavailable after upgrading from 2.1.9 | Keep `linux-cachyos`, boot it, then run `omen-acpi prepare-stock-recovery`. |
+| Normal entry and recovery snapshot are both missing | Automatic recovery is impossible. Do not reuse a variant initramfs; use external manual recovery media. |
+| Recovery manifest or payload hash fails | Nothing is changed. Restore a normal stock boot externally and prepare a fresh snapshot. |
 | `omen-acpi` not found after an update | Refresh your shell's command cache: `hash -r` in Bash, `rehash` in Zsh. Fish needs nothing. |
 | The updater says a release is "already installed and consistent" | That version is current. Use `--force` only if you intentionally need to reinstall it. |
 
@@ -413,6 +472,9 @@ sharing.
 - Secure Boot is not supported: the toolkit signs nothing.
 - Experimental entries embed a kernel/initramfs snapshot and must be recreated
   after system updates.
+- Stock recovery works only if its clean-stock snapshot was prepared before
+  the normal entry was lost; it cannot manufacture stock initramfs data from a
+  variant.
 - A BIOS update invalidates every assumption in this repository.
 
 ## Safety and disclaimer

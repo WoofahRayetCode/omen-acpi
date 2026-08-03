@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.1.10 - 2026-08-03
+
+- Added a real preventive stock-boot snapshot. On a clean verified stock boot,
+  the toolkit records provenance and a strict JSON manifest under
+  `/var/lib/omen-acpi-stock-recovery` and copies the stock kernel plus every
+  ordered initramfs component to `boot():/omen-acpi-stock-recovery/`.
+- Added `prepare-stock-recovery`, `recover-stock` and
+  `remove-stock-recovery`, while keeping `reboot-stock` limited to rebooting
+  toward an already existing normal entry.
+- Added the reserved `zz-omen-acpi-stock-recovery` entry for the case where the
+  normal entry was deleted. It points only at verified reserved copies,
+  contains no ACPI override and never changes Limine's default or other
+  entries.
+- Added transactional staging, stable-source/TOCTOU checks, deterministic
+  payload names, SHA-256 verification, strict ownership and permission checks,
+  atomic configuration replacement and rollback.
+- Added snapshot-bound `STOCK RECOVERY ACTIVE` detection that also requires a
+  clean stock DSDT; a marker cannot mask S5, Combined or unknown ACPI state.
+- Documented the upgrade boundary: 2.1.9 only found an existing normal entry.
+  If neither that entry nor a snapshot prepared by 2.1.10 exists, automatic
+  recovery is impossible and external manual recovery is required.
+- Added synthetic recovery fixtures covering preparation gates, parser
+  ambiguity, payload ordering and fidelity, tamper detection, safe Limine
+  editing, rollback, idempotence, removal guards and recovery recognition.
+
 ## 2.1.9 - 2026-08-01
 
 - Contained every interactive menu action in a subshell. All of them call
