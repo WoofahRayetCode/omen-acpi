@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.1.10"
+readonly VERSION="2.1.11"
 readonly APP_NAME="OMEN ACPI Toolkit"
 readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 readonly EXPECTED_BOARD="8E35"
@@ -1169,9 +1169,6 @@ variant_dashboard_color() {
 
 install_one() {
     local variant="$1" build_archive="${2:-}" schema
-    if (( STOCK_RECOVERY_PREPARED == 0 )); then
-        prepare_stock_recovery
-    fi
     schema="$(inspect_variant_schema "$variant")"
     case "$schema" in
         managed) die "The $variant variant is already installed. Remove it first, then run a fresh install." ;;
@@ -1179,6 +1176,9 @@ install_one() {
         conflict) die "The $variant paths contain an unrecognised or modified installation. Run status; no automatic write is allowed." ;;
         absent) ;;
     esac
+    if (( STOCK_RECOVERY_PREPARED == 0 )); then
+        prepare_stock_recovery
+    fi
     if [[ -z "$build_archive" ]]; then
         build_archive="$(latest_build "$variant" 2>/dev/null || true)"
     fi
@@ -1431,15 +1431,20 @@ doctor() {
 }
 
 choose_setup_variant() {
-    local choice
+    local choice recommendation='Recommended — confirmed shutdown correction'
+    local prompt='Choose an option [1 — S5-only]: '
+    if (( PLAIN_MODE )); then
+        recommendation='Recommended - confirmed shutdown correction'
+        prompt='Choose an option [1 - S5-only]: '
+    fi
     SETUP_VARIANT_RESULT=''
     while true; do
         printf '\nChoose the experimental setup:\n\n'
-        printf '  1. S5-only\n     Recommended — confirmed shutdown correction\n\n'
+        printf '  1. S5-only\n     %s\n\n' "$recommendation"
         printf '  2. Combined\n     S5 correction plus the separate WQBZ bounds patch\n\n'
         printf '  3. Both\n     Create two independent experimental Limine entries\n\n'
         printf '  b. Back\n\n'
-        if ! read -r -p 'Choose an option [1 — S5-only]: ' choice; then
+        if ! read -r -p "$prompt" choice; then
             printf '\n'
             return 1
         fi

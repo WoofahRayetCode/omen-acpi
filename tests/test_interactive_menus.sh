@@ -34,6 +34,14 @@ for mapping in ':s5' '1:s5' '2:combined' '3:both'; do
     contains "$output" 'b. Back' "Back menu line is hidden"
 done
 
+PLAIN_MODE=1
+plain_setup="$(choose 1)"
+printf '%s' "$plain_setup" | LC_ALL=C grep -q '[^ -~[:space:]]' \
+    && fail "plain setup menu emitted a non-ASCII character"
+contains "$plain_setup" 'Recommended - confirmed shutdown correction' \
+    "plain setup menu lost its ASCII recommendation"
+PLAIN_MODE=0
+
 result="$(choose b)"; [[ "$(sed -n '1p' <<<"$result")" == 1 && -z "$(sed -n '2p' <<<"$result")" ]] \
     || fail "Back did not cancel cleanly"
 SETUP_VARIANT_RESULT=sentinel; choose_setup_variant </dev/null > "$work/eof.out" || true; eof_output="$(<"$work/eof.out")"
@@ -58,6 +66,18 @@ guided_output="$(guided_setup <<<2)"
 contains "$guided_output" 'Selected setup: Combined' "readable setup selection was not shown"
 contains "$(<"$confirmation")" 'Continue with the Combined experimental setup?' "specific confirmation did not follow selection"
 [[ ! -e "$work/actions" ]] || fail "negative confirmation allowed a modification"
+
+prepare_stock_recovery() { printf 'recovery-write\n' >> "$work/install-order-actions"; }
+for schema in managed conflict; do
+    : > "$work/install-order-actions"
+    TEST_SCHEMA="$schema"
+    inspect_variant_schema() { printf '%s\n' "$TEST_SCHEMA"; }
+    if ( install_one s5 ) >"$work/install-$schema.out" 2>"$work/install-$schema.err"; then
+        fail "$schema variant schema was unexpectedly accepted"
+    fi
+    [[ ! -s "$work/install-order-actions" ]] \
+        || fail "$schema variant refreshed stock recovery before schema rejection"
+done
 
 pause_for_user() { :; }
 ensure_dependencies() { :; }

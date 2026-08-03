@@ -94,6 +94,28 @@ for path in root.rglob("*"):
 print(f"release files verified: {len(release_files)}")
 PY
 
+printf 'version consistency checks...\n'
+python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+expected = "2.1.11"
+for relative in ("install.sh", "omen-acpi", "scripts/03-manage-limine-entry.sh"):
+    values = re.findall(r'^readonly VERSION="([0-9.]+)"$', (root / relative).read_text(), re.MULTILINE)
+    if values != [expected]:
+        raise SystemExit(f"version mismatch in {relative}: {values}")
+values = re.findall(r'^VERSION = "([0-9.]+)"$', (root / "scripts/04-stock-recovery.py").read_text(), re.MULTILINE)
+if values != [expected]:
+    raise SystemExit(f"version mismatch in Python recovery manager: {values}")
+for verifier in ("tools/make-release.sh", "update.sh"):
+    source = (root / verifier).read_text()
+    if "scripts/04-stock-recovery.py" not in source:
+        raise SystemExit(f"{verifier} omits the Python recovery-manager version")
+print("component versions agree and both release verifiers cover Python")
+PY
+
 printf 'embedded Python checks...\n'
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
@@ -138,9 +160,9 @@ for removed_command in migrate restore-legacy refresh; do
     fi
 done
 [[ "$(OMEN_ACPI_TESTING=1 HOME="$work/home" "$ROOT/omen-acpi" --plain version)" \
-    == 'OMEN ACPI Toolkit 2.1.10' ]] || fail "CLI version"
+    == 'OMEN ACPI Toolkit 2.1.11' ]] || fail "CLI version"
 [[ "$(OMEN_ACPI_TESTING=1 HOME="$work/home" "$ROOT/omen-acpi" version --plain)" \
-    == 'OMEN ACPI Toolkit 2.1.10' ]] || fail "global option after command"
+    == 'OMEN ACPI Toolkit 2.1.11' ]] || fail "global option after command"
 
 for invalid_case in \
     'setup invalid' \
@@ -944,5 +966,57 @@ python3 "$ROOT/tests/test_stock_recovery.py"
 
 printf 'interactive menu checks...\n'
 bash "$ROOT/tests/test_interactive_menus.sh"
+
+printf 'release-builder mismatch and updater verify-only checks...\n'
+version_fixture="$work/version-mismatch"
+mkdir -p "$version_fixture"
+cp -a "$ROOT/.github" "$ROOT/.gitignore" "$ROOT/CHANGELOG.md" "$ROOT/LICENSE" \
+    "$ROOT/README.md" "$ROOT/SECURITY.md" "$ROOT/install.sh" "$ROOT/omen-acpi" \
+    "$ROOT/patches" "$ROOT/scripts" "$ROOT/tests" "$ROOT/tools" \
+    "$ROOT/uninstall.sh" "$ROOT/update.sh" "$ROOT/SHA256SUMS" "$version_fixture/"
+sed -i 's/^VERSION = "2.1.11"$/VERSION = "9.9.9"/' \
+    "$version_fixture/scripts/04-stock-recovery.py"
+if "$version_fixture/tools/make-release.sh" "$work" >"$work/version-build.out" 2>"$work/version-build.err"; then
+    fail "release builder accepted a divergent Python manager version"
+fi
+grep -Fq 'scripts/04-stock-recovery.py does not declare version 2.1.11' "$work/version-build.err" \
+    || fail "release builder did not diagnose the Python manager mismatch"
+
+release_output="$work/release"
+mkdir -p "$release_output" "$work/verify-home"
+"$ROOT/tools/make-release.sh" "$release_output" >"$work/release-build.out"
+HOME="$work/verify-home" XDG_DATA_HOME="$work/verify-home/.local/share" \
+    "$ROOT/update.sh" --verify-only --archive \
+    "$release_output/omen-acpi-toolkit-v2.1.11.tar.gz" >"$work/verify-only.out"
+grep -Fq 'Verification completed; installation was not started.' "$work/verify-only.out" \
+    || fail "updater verify-only did not complete verification"
+if find "$work/verify-home" -mindepth 1 -print -quit | grep -q .; then
+    fail "updater verify-only created persistent HOME content"
+fi
+
+mismatch_root="$work/updater-version-mismatch"
+mkdir -p "$mismatch_root/extracted" "$mismatch_root/assets" "$work/mismatch-home"
+tar -xzf "$release_output/omen-acpi-toolkit-v2.1.11.tar.gz" -C "$mismatch_root/extracted"
+mismatch_release="$mismatch_root/extracted/omen-acpi-toolkit-v2.1.11"
+sed -i 's/^VERSION = "2.1.11"$/VERSION = "9.9.9"/' \
+    "$mismatch_release/scripts/04-stock-recovery.py"
+mismatch_hash="$(sha256sum "$mismatch_release/scripts/04-stock-recovery.py" | awk '{print $1}')"
+sed -i "s|^[0-9a-f]\{64\}  scripts/04-stock-recovery.py$|$mismatch_hash  scripts/04-stock-recovery.py|" \
+    "$mismatch_release/SHA256SUMS"
+tar --owner=0 --group=0 --numeric-owner --sort=name --mtime='2026-08-01 00:00:00' \
+    -czf "$mismatch_root/assets/omen-acpi-toolkit-v2.1.11.tar.gz" \
+    -C "$mismatch_root/extracted" omen-acpi-toolkit-v2.1.11
+( cd "$mismatch_root/assets" && sha256sum omen-acpi-toolkit-v2.1.11.tar.gz \
+    > omen-acpi-toolkit-v2.1.11.tar.gz.sha256 )
+if HOME="$work/mismatch-home" "$ROOT/update.sh" --verify-only --archive \
+    "$mismatch_root/assets/omen-acpi-toolkit-v2.1.11.tar.gz" \
+    >"$work/updater-mismatch.out" 2>"$work/updater-mismatch.err"; then
+    fail "updater accepted a divergent Python manager version"
+fi
+grep -Fq 'version mismatch in scripts/04-stock-recovery.py' "$work/updater-mismatch.err" \
+    || fail "updater did not diagnose the Python manager mismatch"
+if find "$work/mismatch-home" -mindepth 1 -print -quit | grep -q .; then
+    fail "failed updater verify-only created persistent HOME content"
+fi
 
 printf 'all tests: PASS\n'

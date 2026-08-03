@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.1.10"
+readonly VERSION="2.1.11"
 readonly TARGET_ROOT="/usr/local/lib/omen-acpi-fix"
 readonly TARGET_BIN="/usr/local/bin/omen-acpi"
 readonly TARGET_DOC="/usr/local/share/doc/omen-acpi-fix"
@@ -217,6 +217,7 @@ release_files=(
     CHANGELOG.md
     LICENSE
     README.md
+    SECURITY.md
     install.sh
     omen-acpi
     patches/README.md
@@ -377,6 +378,7 @@ install -d -o root -g root -m 0755 "$doc_stage/patches"
 install -o root -g root -m 0644 \
     "$source_snapshot/README.md" \
     "$source_snapshot/CHANGELOG.md" \
+    "$source_snapshot/SECURITY.md" \
     "$source_snapshot/LICENSE" \
     "$doc_stage/"
 install -o root -g root -m 0644 \

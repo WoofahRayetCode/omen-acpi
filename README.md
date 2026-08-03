@@ -116,19 +116,19 @@ The normalized transformations are documented in
 Download the release assets, verify both checksum layers, then install:
 
 ```bash
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.10/omen-acpi-toolkit-v2.1.10.tar.gz
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.11/omen-acpi-toolkit-v2.1.11.tar.gz
 ```
 
 ```bash
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.10/omen-acpi-toolkit-v2.1.10.tar.gz.sha256
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.11/omen-acpi-toolkit-v2.1.11.tar.gz.sha256
 ```
 
 ```bash
-sha256sum -c omen-acpi-toolkit-v2.1.10.tar.gz.sha256
+sha256sum -c omen-acpi-toolkit-v2.1.11.tar.gz.sha256
 ```
 
 ```bash
-tar xzf omen-acpi-toolkit-v2.1.10.tar.gz && cd omen-acpi-toolkit-v2.1.10
+tar xzf omen-acpi-toolkit-v2.1.11.tar.gz && cd omen-acpi-toolkit-v2.1.11
 ```
 
 The archive carries a second, per-file manifest. Verify it too:
@@ -160,7 +160,7 @@ noted inline.
 The default interface is a state-aware dashboard:
 
 ```text
-+ OMEN ACPI Toolkit v2.1.10 ---------------------------------------------+
++ OMEN ACPI Toolkit v2.1.11 ---------------------------------------------+
 |  Machine       8E35 / BIOS F.13      READY                             |
 |  Dependencies  All commands          READY                             |
 |  Current boot  0x01072009            STOCK / SAFE                      |
@@ -313,11 +313,15 @@ the entry title or command line.
 
 Preparation rejects S5, Combined, legacy, unknown and unavailable boots,
 missing or duplicate normal entries, unsafe paths, symlinks, hard links,
-variant/composite initramfs and files that change while copied. Staging and
-`fsync` occur on the destination filesystems, activation uses atomic renames,
-and failures restore the previous complete snapshot without leaving a partial
-one. Guided setup and every variant installation prepare the snapshot before
-installing the variant; a variant boot can never update it.
+variant/composite initramfs and files that change while copied. Every initramfs
+is inspected with `lsinitcpio`; content under `kernel/firmware/acpi/` and hashes
+of managed variant initramfs are rejected regardless of the source filename.
+Staging and `fsync` occur on the destination filesystems and activation uses
+atomic renames. The complete new payload/manifest pair is committed before old
+backup cleanup; a cleanup failure keeps the valid new snapshot and reports the
+safely named residue. Guided setup and every variant installation prepare the
+snapshot only after the requested variant schema is known to be absent; an
+installed, legacy or conflicting variant cannot refresh it.
 
 `omen-acpi recover-stock` has three outcomes:
 
@@ -329,6 +333,14 @@ installing the variant; a variant boot can never update it.
   copies. It preserves all other entries, global settings, comments, order and
   default, then tells you exactly which entry to select. Reboot still requires
   explicit confirmation.
+
+Recovery creation and removal preserve the exact initially read
+`limine.conf` bytes and recheck file identity, content and metadata after the
+backup and immediately before replacement. A detected external modification is
+never silently overwritten. The toolkit lock serializes its own operations;
+programs that do not honor that advisory lock can still race after the final
+check, so post-replacement byte verification remains fail-closed and preserves
+foreign bytes rather than rolling them back.
 
 The recovery entry includes a snapshot-bound marker. The dashboard displays
 `STOCK RECOVERY ACTIVE` only when that marker matches a valid manifest and all

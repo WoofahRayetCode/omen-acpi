@@ -28,13 +28,17 @@ version="$(sed -n 's/^readonly VERSION="\([0-9.]*\)"$/\1/p' install.sh)"
 }
 
 # Every component that declares a version must agree, because update.sh
-# refuses to install a release whose three declarations diverge.
+# refuses to install a release whose declarations diverge.
 for file in install.sh omen-acpi scripts/03-manage-limine-entry.sh; do
     grep -Fxq "readonly VERSION=\"$version\"" "$file" || {
         printf 'ERROR: %s does not declare version %s\n' "$file" "$version" >&2
         exit 1
     }
 done
+grep -Fxq "VERSION = \"$version\"" scripts/04-stock-recovery.py || {
+    printf 'ERROR: scripts/04-stock-recovery.py does not declare version %s\n' "$version" >&2
+    exit 1
+}
 
 mapfile -t release_files < <(
     python3 - <<'PY'

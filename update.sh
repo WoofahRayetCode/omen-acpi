@@ -673,6 +673,11 @@ for path in version_files:
             f"version mismatch in {path.relative_to(root)}: {matches!r}"
         )
 
+manager = root / "scripts/04-stock-recovery.py"
+matches = re.findall(r'^VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$', manager.read_text(encoding="utf-8"), flags=re.MULTILINE)
+if matches != [expected_version]:
+    raise SystemExit(f"version mismatch in {manager.relative_to(root)}: {matches!r}")
+
 print(f"verified {len(release_files)} internal release files")
 PY
 
@@ -830,7 +835,6 @@ main() {
         die "Run update.sh as your normal user, without sudo."
     fi
     check_commands
-    persist_updater
     resolve_archive
     temporary_root="$(mktemp -d /tmp/omen-acpi-update.XXXXXX)"
     chmod 0700 "$temporary_root"
@@ -843,6 +847,9 @@ main() {
     verify_external_checksum
     extract_release_safely
     verify_internal_release
+    if (( verify_only == 0 )); then
+        persist_updater
+    fi
     read_installed_version
 
     printf '\nInstalled version: %s\n' "$installed_version"

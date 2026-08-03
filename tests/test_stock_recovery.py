@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Paolo De Marinis
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Synthetic-only regression tests for preventive stock recovery."""
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +37,9 @@ class RecoveryTest(unittest.TestCase):
         (self.esp / "vmlinuz-linux-cachyos").write_bytes(b"stock-kernel\0exact")
         (self.esp / "initramfs-linux-cachyos.img").write_bytes(b"stock-initramfs-one")
         (self.esp / "cpu-ucode.img").write_bytes(b"stock-initramfs-two")
+        self.lsinitcpio = self.temp / "lsinitcpio"
+        self.lsinitcpio.write_text("#!/bin/sh\nprintf '%s\\n' usr/bin/init\n")
+        self.lsinitcpio.chmod(0o755)
         self.original = (
             "timeout: 5\n"
             "default_entry: 2\n"
@@ -52,7 +57,8 @@ class RecoveryTest(unittest.TestCase):
         )
         (self.esp / "limine.conf").write_text(self.original)
         self.environment = mock.patch.dict(os.environ, {
-            "OMEN_ACPI_TEST_ROOT": str(self.root), "OMEN_ACPI_TEST_ESP": str(self.esp)
+            "OMEN_ACPI_TEST_ROOT": str(self.root), "OMEN_ACPI_TEST_ESP": str(self.esp),
+            "OMEN_ACPI_TEST_LSINITCPIO": str(self.lsinitcpio)
         }, clear=False)
         self.environment.start()
         self.probe = mock.patch.object(recovery, "probe", return_value={
@@ -136,6 +142,17 @@ class RecoveryTest(unittest.TestCase):
         payload.unlink(); payload.symlink_to("module-001.bin")
         with self.assertRaises(recovery.Failure): recovery.snapshot()
 
+    def test_valid_2_1_10_snapshot_can_be_verified_and_refreshed(self):
+        self.prepare(); manifest = recovery.STATE() / "manifest.json"
+        data = json.loads(manifest.read_text()); data["toolkit_version"] = "2.1.10"
+        canonical = json.dumps({key: value for key, value in data.items() if key != "snapshot_id"},
+                               sort_keys=True, separators=(",", ":")).encode()
+        data["snapshot_id"] = recovery.hashlib.sha256(canonical).hexdigest()
+        manifest.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        self.assertEqual(recovery.snapshot()["toolkit_version"], "2.1.10")
+        recovery.prepare()
+        self.assertEqual(recovery.snapshot()["toolkit_version"], "2.1.11")
+
     def setUp_snapshot_again_after_tamper(self):
         shutil.rmtree(recovery.STATE())
         shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
@@ -148,6 +165,39 @@ class RecoveryTest(unittest.TestCase):
             with self.assertRaises(recovery.Failure): recovery.prepare()
         self.assertEqual(recovery.snapshot()["snapshot_id"], old["snapshot_id"])
         self.assertEqual((self.esp / "omen-acpi-stock-recovery/kernel.bin").read_bytes(), old_kernel)
+
+    def test_renamed_override_initramfs_is_rejected_and_old_snapshot_survives(self):
+        old = self.prepare()
+        script = "#!/bin/sh\nprintf '%s\\n' kernel/firmware/acpi/DSDT.aml\n"
+        self.lsinitcpio.write_text(script)
+        with self.assertRaises(recovery.Failure):
+            recovery.prepare()
+        self.assertEqual(recovery.snapshot()["snapshot_id"], old["snapshot_id"])
+
+    def test_renamed_managed_payload_hash_is_rejected(self):
+        old = self.prepare()
+        managed = self.root / "var/lib/omen-acpi-s5-test"
+        managed.mkdir(mode=0o700)
+        source = self.esp / "initramfs-linux-cachyos.img"
+        (managed / "initramfs.img").write_bytes(source.read_bytes())
+        (managed / "initramfs.sha256").write_text(recovery.sha(source) + "\n")
+        with self.assertRaises(recovery.Failure):
+            recovery.prepare()
+        self.assertEqual(recovery.snapshot()["snapshot_id"], old["snapshot_id"])
+
+    def test_prepare_cleanup_failure_keeps_new_committed_pair(self):
+        for point in ("prepare-old-payload", "prepare-old-state"):
+            with self.subTest(point=point):
+                self.prepare()
+                (self.esp / "vmlinuz-linux-cachyos").write_bytes(f"new-{point}".encode())
+                with mock.patch.dict(os.environ, {"OMEN_ACPI_TEST_FAIL_CLEANUP": point}):
+                    recovery.prepare()
+                self.assertEqual((self.esp / "omen-acpi-stock-recovery/kernel.bin").read_bytes(), f"new-{point}".encode())
+                recovery.snapshot()
+                for old in (*self.esp.glob(".omen-acpi-stock-recovery.old.*"),
+                            *recovery.STATE().parent.glob(".omen-acpi-stock-recovery.old.*")):
+                    shutil.rmtree(old)
+                shutil.rmtree(recovery.STATE()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
 
     def test_missing_normal_and_missing_snapshot_never_change_limine(self):
         config = self.esp / "limine.conf"
@@ -189,6 +239,105 @@ class RecoveryTest(unittest.TestCase):
         config.write_text(exact + "\n/zz-omen-acpi-stock-recovery\n protocol: linux\n kernel_path: boot():/x\n module_path: boot():/y\n")
         with self.assertRaises(recovery.Failure): recovery.recover()
 
+    def test_remove_rejects_reserved_title_without_markers(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        config.write_text(self.original + "\n/zz-omen-acpi-stock-recovery\n protocol: linux\n kernel_path: boot():/x\n module_path: boot():/y\n")
+        before = config.read_bytes()
+        with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assertEqual(config.read_bytes(), before)
+        recovery.snapshot()
+
+    def test_remove_rejects_every_ambiguous_reserved_form_without_writes(self):
+        data = self.prepare(); config = self.esp / "limine.conf"; block = recovery.owned_block(data)
+        cases = {
+            "one-begin": self.original + "\n" + recovery.BEGIN + "\n/zz-omen-acpi-stock-recovery\n",
+            "one-end": self.original + "\n/zz-omen-acpi-stock-recovery\n" + recovery.END + "\n",
+            "duplicate-marker": self.original + "\n" + block + "\n" + recovery.BEGIN + "\n",
+            "foreign-entry": self.original + "\n/zz-omen-acpi-stock-recovery\n protocol: linux\n kernel_path: boot():/foreign\n module_path: boot():/foreign\n",
+            "modified-owned": self.original + "\n" + block.replace("kernel.bin", "changed.bin") + "\n",
+            "duplicate-entry": self.original + "\n" + block + "\n" + block + "\n",
+        }
+        for name, content in cases.items():
+            with self.subTest(name=name):
+                config.write_text(content); before = config.read_bytes()
+                with self.assertRaises(recovery.Failure): recovery.remove()
+                self.assertEqual(config.read_bytes(), before)
+                recovery.snapshot()
+
+    def test_recover_detects_change_during_backup(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
+        config.write_text(without_normal)
+        original = recovery.file_identity
+        calls = 0
+        def inject(path, expected=None):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                config.write_text(without_normal + "# external change\n")
+            return original(path, expected)
+        with mock.patch.object(recovery, "file_identity", side_effect=inject):
+            with self.assertRaises(recovery.Failure): recovery.recover()
+        self.assertIn("external change", config.read_text())
+
+    def test_recover_detects_change_after_replace_and_preserves_external_bytes(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
+        config.write_text(without_normal)
+        original_replace = recovery.os.replace
+        def replace_then_edit(source, target):
+            original_replace(source, target)
+            if Path(target) == config:
+                config.write_bytes(config.read_bytes() + b"# external recover commit change\n")
+        with mock.patch.object(recovery.os, "replace", side_effect=replace_then_edit):
+            with self.assertRaises(recovery.Failure): recovery.recover()
+        self.assertIn("external recover commit change", config.read_text())
+        recovery.snapshot()
+
+    def test_remove_detects_change_during_backup(self):
+        self.prepare(); config = self.esp / "limine.conf"; original_bytes = config.read_bytes()
+        identity = recovery.file_identity; calls = 0
+        def inject(path, expected=None):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                config.write_bytes(original_bytes + b"# external remove change\n")
+            return identity(path, expected)
+        with mock.patch.object(recovery, "file_identity", side_effect=inject):
+            with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assertIn("external remove change", config.read_text())
+        recovery.snapshot()
+
+    def test_remove_detects_change_after_replace_and_preserves_external_bytes(self):
+        self.prepare(); config = self.esp / "limine.conf"
+        original_replace = recovery.os.replace
+        def replace_then_edit(source, target):
+            original_replace(source, target)
+            if Path(target) == config:
+                config.write_bytes(config.read_bytes() + b"# external commit change\n")
+        with mock.patch.object(recovery.os, "replace", side_effect=replace_then_edit):
+            with self.assertRaises(recovery.Failure): recovery.remove()
+        self.assertIn("external commit change", config.read_text())
+        recovery.snapshot()
+
+    def test_remove_cleanup_failure_is_committed_and_residue_is_reported(self):
+        for point in ("remove-detached-payload", "remove-detached-state", "remove-config-backup"):
+            with self.subTest(point=point):
+                self.prepare(); config = self.esp / "limine.conf"
+                errors = io.StringIO()
+                with mock.patch.dict(os.environ, {"OMEN_ACPI_TEST_FAIL_CLEANUP": point}), \
+                     redirect_stderr(errors):
+                    recovery.remove()
+                self.assertEqual(config.read_text(), self.original)
+                self.assertFalse(recovery.STATE().exists())
+                self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
+                self.assertIn("removal committed", errors.getvalue())
+                for residue in (*self.esp.glob(".omen-acpi-stock-recovery.removed.*"),
+                                *recovery.STATE().parent.glob(".omen-acpi-stock-recovery.removed.*"),
+                                *self.esp.glob(".limine.conf.omen-remove-backup.*")):
+                    if residue.is_dir(): shutil.rmtree(residue)
+                    else: residue.unlink()
+
     def test_configuration_rollback_on_regeneration_failure(self):
         self.prepare(); config = self.esp / "limine.conf"
         without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
@@ -228,7 +377,7 @@ class RecoveryTest(unittest.TestCase):
             recovery.status()
         report = output.getvalue()
         for field in ("BOOT\tstock", "DSDT_REVISION\t", "DETECTION\t", "SNAPSHOT\tvalid",
-                      "SNAPSHOT_CREATED\t", "SNAPSHOT_VERSION\t2.1.10", "KERNEL\t",
+                      "SNAPSHOT_CREATED\t", "SNAPSHOT_VERSION\t2.1.11", "KERNEL\t",
                       "MODULES\t2", "HASHES\tverified", "NORMAL_ENTRY\tavailable",
                       "RECOVERY_ENTRY\tmissing", "RECOMMENDATION\t"):
             self.assertIn(field, report)

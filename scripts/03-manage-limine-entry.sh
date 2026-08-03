@@ -10,7 +10,7 @@ export PATH="/usr/bin:/bin"
 # Manage separate S5-only and combined Limine entries for the exact reference
 # machine. The normal CachyOS entry is never replaced.
 
-readonly VERSION="2.1.10"
+readonly VERSION="2.1.11"
 readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
 readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

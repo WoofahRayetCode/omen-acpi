@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.1.11 - 2026-08-03
+
+- Stock-recovery preparation now inspects every initramfs with `lsinitcpio`,
+  rejects any `kernel/firmware/acpi/` content and rejects payloads whose hashes
+  match a managed variant even when they have been renamed like a normal image.
+- Stock-recovery removal now accepts only no reserved entry or one byte-exact
+  manifest-owned entry. Missing, incomplete or duplicate markers, foreign or
+  duplicate reserved entries, and one-field modifications fail without writes.
+- Snapshot refresh commits the complete verified payload/manifest pair before
+  non-essential cleanup. Cleanup failures preserve the new valid snapshot,
+  retain safely named old backups and emit precise warnings.
+- Recovery removal separates configuration replacement, state detachment,
+  commit and cleanup so failures cannot produce a valid-looking half-state.
+- Recovery creation and removal retain the exact initially read `limine.conf`
+  bytes and verify identity, content and metadata again after backup and just
+  before replacement, preventing detected concurrent changes from being lost.
+- Variant installation now checks for managed, legacy or conflicting state
+  before it creates or refreshes the preventive stock-recovery snapshot.
+- `--plain` setup-menu output is fully ASCII and ANSI-free, including the path
+  exercised by the interactive regression suite.
+- `update.sh --verify-only` completes archive verification before updater
+  persistence and does not create `~/.local/bin` or invoke the installer.
+- Release construction, updater verification and consistency tests now include
+  the Python stock-recovery manager's `2.1.11` version declaration.
+- Pinned actions/checkout v7.0.0 to its full official commit SHA, retained
+  read-only workflow permissions and added private security-reporting guidance.
+- Hardware checks remain restricted to the documented reference configuration.
+  Broader hardware support remains future design work and is not available.
+
 ## 2.1.10 - 2026-08-03
 
 - Fixed Guided setup so its complete variant menu is printed directly to the

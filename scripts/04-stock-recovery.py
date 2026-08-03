@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Paolo De Marinis
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Fail-closed preventive stock-boot recovery manager.
 
 All mutable paths can be redirected below OMEN_ACPI_TEST_ROOT.  Production
@@ -22,7 +24,8 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "2.1.10"
+VERSION = "2.1.11"
+SUPPORTED_SNAPSHOT_VERSIONS = {VERSION, "2.1.10"}
 SCHEMA = 1
 ENTRY = "zz-omen-acpi-stock-recovery"
 BEGIN = "# BEGIN OMEN-ACPI OWNED STOCK RECOVERY v1"
@@ -92,6 +95,20 @@ def fsync_dir(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def cleanup_tree(path: Path, point: str) -> None:
+    if (os.environ.get("OMEN_ACPI_TEST_ROOT") and
+            os.environ.get("OMEN_ACPI_TEST_FAIL_CLEANUP") == point):
+        raise OSError(f"simulated cleanup failure at {point}")
+    shutil.rmtree(path)
+
+
+def cleanup_file(path: Path, point: str) -> None:
+    if (os.environ.get("OMEN_ACPI_TEST_ROOT") and
+            os.environ.get("OMEN_ACPI_TEST_FAIL_CLEANUP") == point):
+        raise OSError(f"simulated cleanup failure at {point}")
+    path.unlink()
 
 
 def acquire_lock():
@@ -275,6 +292,73 @@ def copy_stable(source: Path, target: Path) -> str:
     return sha(target)
 
 
+def file_identity(path: Path, expected: bytes | None = None) -> tuple[int, int, int, int, int, int]:
+    """Return an ESP-friendly identity and optionally require exact bytes."""
+    info = regular(path)
+    content = path.read_bytes()
+    after = regular(path)
+    identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                info.st_ctime_ns, stat.S_IMODE(info.st_mode))
+    if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                    after.st_ctime_ns, stat.S_IMODE(after.st_mode)):
+        raise Failure(f"file changed while inspected: {path}")
+    if expected is not None and content != expected:
+        raise Failure(f"file changed before commit: {path}")
+    return identity
+
+
+def inspect_source_initramfs(path: Path, managed_hashes: set[str]) -> None:
+    """Reject ACPI overrides and any payload identical to a managed variant."""
+    if sha(path) in managed_hashes:
+        raise Failure(f"managed variant initramfs was renamed as a stock module: {path}")
+    command = os.environ.get("OMEN_ACPI_TEST_LSINITCPIO", "lsinitcpio")
+    try:
+        result = subprocess.run([command, "-l", str(path)], text=True,
+                                capture_output=True, check=False)
+    except OSError as error:
+        raise Failure(f"cannot inspect initramfs {path}: {error}") from error
+    if result.returncode:
+        raise Failure(f"lsinitcpio could not inspect source initramfs: {path}")
+    members = [line.strip().lstrip("./") for line in result.stdout.splitlines()]
+    forbidden = [item for item in members if item == "kernel/firmware/acpi" or
+                 item.startswith("kernel/firmware/acpi/")]
+    if forbidden:
+        raise Failure(f"ACPI override content found in source initramfs: {path}")
+
+
+def managed_initramfs_hashes() -> set[str]:
+    hashes: set[str] = set()
+    for variant in ("s5", "combined"):
+        state = rooted(f"/var/lib/omen-acpi-{variant}-test")
+        if not state.exists() and not state.is_symlink():
+            continue
+        secure_dir(state)
+        checksum = state / "initramfs.sha256"
+        payload = state / "initramfs.img"
+        regular(checksum, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
+        regular(payload, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
+        value = checksum.read_text(encoding="ascii", errors="strict").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise Failure(f"managed variant contains an invalid initramfs checksum: {checksum}")
+        if sha(payload) != value:
+            raise Failure(f"managed variant initramfs checksum does not match its payload: {payload}")
+        hashes.add(value)
+    return hashes
+
+
+def restore_config_if_unchanged(config: Path, backup: Path, installed: bytes) -> bool:
+    """Restore only bytes installed by this transaction; preserve foreign edits."""
+    try:
+        file_identity(config, installed)
+    except Failure:
+        print("WARNING: Limine configuration changed after toolkit commit; external bytes were preserved.",
+              file=sys.stderr)
+        return False
+    os.replace(backup, config)
+    fsync_dir(config.parent)
+    return True
+
+
 def snapshot() -> dict:
     state = STATE()
     secure_dir(state)
@@ -290,7 +374,8 @@ def snapshot() -> dict:
                 "kernel_version", "normalized_entry", "original_kernel_path", "original_module_paths",
                 "command_line", "payload_root", "payloads", "stock_boot_verified", "snapshot_id"}
     if (set(data) != required or data["schema"] != SCHEMA
-            or data["toolkit_version"] != VERSION or data["stock_boot_verified"] is not True):
+            or data["toolkit_version"] not in SUPPORTED_SNAPSHOT_VERSIONS
+            or data["stock_boot_verified"] is not True):
         raise Failure("recovery manifest schema or provenance is invalid")
     if tuple(data["machine"][key] for key in ("product", "board", "bios")) != EXPECTED:
         raise Failure("recovery snapshot belongs to a different machine or BIOS")
@@ -336,6 +421,9 @@ def prepare() -> None:
         if any(token.lower() in canonical.lower() for token in forbidden):
             raise Failure(f"variant or ACPI-override payload rejected: {canonical}")
         regular(local)
+    known_hashes = managed_initramfs_hashes()
+    for local, _canonical in module_pairs:
+        inspect_source_initramfs(local, known_hashes)
     payload = esp / "omen-acpi-stock-recovery"
     if payload.exists() or payload.is_symlink():
         secure_dir(payload)
@@ -379,8 +467,19 @@ def prepare() -> None:
         if state_dir.exists(): state_dir.rename(old_state)
         state_stage.rename(state_dir); activated_state = True; fsync_dir(state_dir.parent)
         snapshot()
-        if old_payload.exists(): shutil.rmtree(old_payload)
-        if old_state.exists(): shutil.rmtree(old_state)
+        # The new pair is committed here. Cleanup is non-essential and must
+        # never roll it back after either old component has been deleted.
+        activated_payload = activated_state = False
+        cleanup_failures = []
+        for old, point in ((old_payload, "prepare-old-payload"),
+                           (old_state, "prepare-old-state")):
+            if old.exists():
+                try:
+                    cleanup_tree(old, point)
+                except OSError as error:
+                    cleanup_failures.append(f"{old}: {error}")
+        for failure in cleanup_failures:
+            print(f"WARNING: committed snapshot preserved; old backup cleanup failed: {failure}", file=sys.stderr)
         print(f"Stock recovery snapshot prepared from {source['title']!r}.")
     except Exception:
         if activated_state and state_dir.exists(): shutil.rmtree(state_dir)
@@ -406,8 +505,9 @@ def owned_block(data: dict) -> str:
 
 
 def recover() -> None:
-    machine(); esp = esp_path(); config = esp / "limine.conf"; before = regular(config)
-    text = config.read_text(encoding="utf-8", errors="strict")
+    machine(); esp = esp_path(); config = esp / "limine.conf"
+    original_bytes = config.read_bytes(); before_identity = file_identity(config, original_bytes)
+    text = original_bytes.decode("utf-8", errors="strict")
     normal = normal_entry(text, required=False)
     if normal is not None:
         print(f"NORMAL\t{normal['title']}")
@@ -427,23 +527,30 @@ def recover() -> None:
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
     stage = config.with_name(f".{config.name}.omen-recovery.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-recovery-backup.{os.getpid()}")
+    config_replaced = False
     try:
-        stage.write_text(new_text, encoding="utf-8"); os.chmod(stage, stat.S_IMODE(before.st_mode)); fsync_file(stage)
-        if regular(config).st_mtime_ns != before.st_mtime_ns or sha(config) != hashlib.sha256(text.encode()).hexdigest():
+        stage.write_text(new_text, encoding="utf-8"); os.chmod(stage, before_identity[-1]); fsync_file(stage)
+        if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed during recovery")
-        shutil.copy2(config, backup); fsync_file(backup)
-        os.replace(stage, config); fsync_dir(config.parent)
+        backup.write_bytes(original_bytes); os.chmod(backup, before_identity[-1]); fsync_file(backup)
+        file_identity(backup, original_bytes)
+        if file_identity(config, original_bytes) != before_identity:
+            raise Failure("Limine configuration changed during recovery backup")
+        os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
+        file_identity(config, new_text.encode("utf-8"))
         if os.environ.get("OMEN_ACPI_TEST_FAIL_REGENERATE") == "1":
             raise Failure("simulated Limine regeneration failure")
-        verify = config.read_text(encoding="utf-8", errors="strict")
-        if verify.count(block) != 1:
+        verify = config.read_bytes()
+        if verify != new_text.encode("utf-8") or verify.decode("utf-8", errors="strict").count(block) != 1:
             raise Failure("post-write recovery entry verification failed")
         backup.unlink(); print(f"CREATED\t{ENTRY}")
     except Exception:
-        if backup.exists(): os.replace(backup, config); fsync_dir(config.parent)
+        if config_replaced and backup.exists():
+            restore_config_if_unchanged(config, backup, new_text.encode("utf-8"))
         raise
     finally:
         if stage.exists(): stage.unlink()
+        if backup.exists(): backup.unlink()
 
 
 def active() -> None:
@@ -459,37 +566,77 @@ def active() -> None:
 
 
 def remove() -> None:
-    machine(); esp = esp_path(); config = esp / "limine.conf"; text = config.read_text(encoding="utf-8", errors="strict")
+    # Removal remains available after a BIOS change, but ownership remains exact.
+    esp = esp_path(); config = esp / "limine.conf"
+    original_bytes = config.read_bytes(); before_identity = file_identity(config, original_bytes)
+    text = original_bytes.decode("utf-8", errors="strict")
     data = snapshot(); block = owned_block(data)
     normal = normal_entry(text, required=False)
     variants = any(item["title"] in ("zz-omen-acpi-s5-test", "zz-omen-acpi-combined-test") for item in entries(text))
     if normal is None and variants:
         raise Failure("recovery removal blocked: it is the only remaining stock boot path while experimental variants exist")
-    if text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
+    reserved = [item for item in entries(text) if item["title"] == ENTRY]
+    if len(reserved) > 1 or text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
         raise Failure("reserved recovery ownership markers are ambiguous")
-    if BEGIN in text and text.count(block) != 1:
+    if reserved and (BEGIN not in text or text.count(block) != 1):
+        raise Failure("reserved recovery entry is foreign or modified")
+    if BEGIN in text and (len(reserved) != 1 or text.count(block) != 1):
         raise Failure("reserved recovery entry was modified")
+    if not reserved and (BEGIN in text or END in text or
+                         "boot():/omen-acpi-stock-recovery" in text):
+        raise Failure("foreign recovery ownership marker or payload reference exists")
     new_text = text.replace("\n\n" + block + "\n", "\n").replace(block + "\n", "")
     stage = config.with_name(f".{config.name}.omen-remove.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-remove-backup.{os.getpid()}")
     payload, _ = limine_local(data["payload_root"], esp)
     detached_payload = payload.with_name(f".{payload.name}.removed.{os.getpid()}")
     detached_state = STATE().with_name(f".{STATE().name}.removed.{os.getpid()}")
+    config_replaced = False
+    removal_committed = False
     try:
-        stage.write_text(new_text, encoding="utf-8"); os.chmod(stage, stat.S_IMODE(config.stat().st_mode)); fsync_file(stage)
-        shutil.copy2(config, backup); fsync_file(backup); os.replace(stage, config); fsync_dir(config.parent)
+        stage.write_text(new_text, encoding="utf-8"); os.chmod(stage, before_identity[-1]); fsync_file(stage)
+        backup.write_bytes(original_bytes); os.chmod(backup, before_identity[-1]); fsync_file(backup)
+        file_identity(backup, original_bytes)
+        if file_identity(config, original_bytes) != before_identity:
+            raise Failure("Limine configuration changed during removal backup")
+        os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
+        file_identity(config, new_text.encode("utf-8"))
         payload.rename(detached_payload); STATE().rename(detached_state)
-        if BEGIN in config.read_text(encoding="utf-8"):
+        if payload.exists() or STATE().exists():
+            raise Failure("managed recovery state did not detach completely")
+        verified = config.read_bytes()
+        if verified != new_text.encode("utf-8"):
+            raise Failure("Limine configuration changed during removal commit")
+        verified_text = verified.decode("utf-8", errors="strict")
+        if (ENTRY in verified_text or BEGIN in verified_text or END in verified_text or
+                "boot():/omen-acpi-stock-recovery" in verified_text):
             raise Failure("post-removal verification failed")
-        shutil.rmtree(detached_payload); shutil.rmtree(detached_state); backup.unlink()
+        # Detach plus verified config is the commit point. Leftovers are safe,
+        # hidden and explicitly reported if non-essential cleanup fails.
+        removal_committed = True
+        cleanup_failures = []
+        for old, point in ((detached_payload, "remove-detached-payload"),
+                           (detached_state, "remove-detached-state")):
+            try:
+                cleanup_tree(old, point)
+            except OSError as error:
+                cleanup_failures.append(f"{old}: {error}")
+        try:
+            cleanup_file(backup, "remove-config-backup")
+        except OSError as error:
+            cleanup_failures.append(f"{backup}: {error}")
+        for failure in cleanup_failures:
+            print(f"WARNING: removal committed; detached cleanup failed: {failure}", file=sys.stderr)
         print("Stock recovery entry, payloads and state removed.")
     except Exception:
         if detached_state.exists() and not STATE().exists(): detached_state.rename(STATE())
         if detached_payload.exists() and not payload.exists(): detached_payload.rename(payload)
-        if backup.exists(): os.replace(backup, config); fsync_dir(config.parent)
+        if config_replaced and backup.exists():
+            restore_config_if_unchanged(config, backup, new_text.encode("utf-8"))
         raise
     finally:
         if stage.exists(): stage.unlink()
+        if backup.exists() and not removal_committed: backup.unlink()
 
 
 def status() -> None:
