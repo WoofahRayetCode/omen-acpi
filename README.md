@@ -15,24 +15,57 @@ experimental Limine entry, and leaves the normal boot entry untouched.
 > BIOS revision. Read [Safety and disclaimer](#safety-and-disclaimer) before you
 > use it.
 
-## Supported hardware
+## Validated reference hardware
 
-| Property | Required value |
+The only physical machine validated by the maintainer is the configuration
+below. Validation applies to this exact retail model, board and BIOS only.
+
+| Property | Validated value |
 | --- | --- |
 | Retail model | HP OMEN MAX 16-ap0006sl |
 | DMI product name | `OMEN Gaming Laptop 16-ap0xxx` |
 | Mainboard | `8E35` |
 | BIOS | `F.13` |
-| Firmware graphics mode | `Hybrid` |
-| NVIDIA PCI address | `0000:01:00.0` |
+| Distribution | CachyOS |
+| Kernel | `7.1.5-1-cachyos` |
+| ESP | `/boot` |
 | Secure Boot | disabled |
+| Normal Limine entry | `linux-cachyos` |
 
-Developed and tested on **CachyOS/Arch Linux** with **mkinitcpio** and
-**Limine**. The kernel must be built with `CONFIG_ACPI_TABLE_UPGRADE=y`.
+`OMEN Gaming Laptop 16-ap0xxx` is a DMI identifier shared by a model family; it
+does not establish compatibility with every SKU in that family. S5-only and
+Combined were booted and tested by the maintainer only on the reference machine.
+Normal installation, boot, return-to-stock and removal flows were exercised
+there, and stock recovery was created, removed and recreated on its real
+filesystem. No other model, SKU, BIOS or board is validated or supported. The
+future opt-in path for non-identical hardware is not available.
 
-The DMI product name covers a model family. Strict product, board, BIOS, GPU and
-ACPI-structure checks reduce the risk of applying the patch elsewhere, but they
-do not prove compatibility with every retail SKU.
+Developed for **CachyOS/Arch Linux** with **mkinitcpio** and **Limine**. Strict
+product, board, BIOS, GPU and ACPI-structure checks reduce the risk of applying
+the patch elsewhere, but they do not prove compatibility.
+
+## Validation scope
+
+On 4 August 2026 the maintainer booted both managed variants on the single
+[validated reference machine](#validated-reference-hardware). Each boot loaded
+exactly its intended managed DSDT. The verified S5-only and Combined shutdowns
+completed without the previous abnormal post-shutdown heating, and the verified
+Combined boot passed the BF01/WQBZ check without related
+`AE_AML_BUFFER_LIMIT`, `WQBZ` or `WQBE` messages.
+
+The normal `recover-stock` route was exercised from Combined and returned to
+the unchanged `linux-cachyos` entry without creating an unnecessary recovery
+entry. The preventive snapshot was created, removed and recreated on the real
+filesystem; `limine.conf` remained byte-for-byte identical and no transactional
+residue remained.
+
+Destructive, corruption, collision, failure-injection and concurrent-race
+scenarios were intentionally limited to automated fixtures. In particular, the
+normal entry was not deleted on the physical machine and no recreated emergency
+recovery entry was booted there. Automated tests do not demonstrate
+compatibility with any other hardware. See the living
+[validation record](docs/validation.md)
+for the exact real-hardware and synthetic-only boundaries.
 
 ## What it does
 
@@ -104,6 +137,7 @@ The normalized transformations are documented in
 ## Requirements
 
 - The exact hardware and BIOS listed above.
+- Hybrid firmware graphics mode and the NVIDIA GPU at `0000:01:00.0`.
 - A kernel with `CONFIG_ACPI_TABLE_UPGRADE=y`.
 - Secure Boot disabled.
 - Limine as the bootloader, with `limine-entry-tool`.
@@ -163,13 +197,16 @@ noted inline.
 The default interface is a state-aware dashboard:
 
 ```text
-+ OMEN ACPI Toolkit v2.1.11 ---------------------------------------------+
-|  Machine       8E35 / BIOS F.13      READY                             |
-|  Dependencies  All commands          READY                             |
-|  Current boot  0x01072009            STOCK / SAFE                      |
-|  S5-only       Limine test entry     NOT INSTALLED                     |
-|  Combined      S5 + WQBZ entry       NOT INSTALLED                     |
-+------------------------------------------------------------------------+
++ OMEN ACPI Toolkit v2.1.11 -----------------------------------------------+
+|                                                                          |
+|  Machine        8E35 / BIOS F.13       READY                             |
+|  Dependencies   All commands available READY                             |
+|  Current boot   0x01072009             STOCK / SAFE                      |
+|  Stock recovery Preventive snapshot    VALID                             |
+|  S5-only        Limine test entry      NOT INSTALLED                     |
+|  Combined       S5 + WQBZ entry        NOT INSTALLED                     |
+|                                                                          |
++--------------------------------------------------------------------------+
 ```
 
 Choose **Guided setup**. The CLI will:
@@ -370,8 +407,9 @@ At the final commit boundary, recovery-entry creation checks the original
 `limine.conf` again after the last full snapshot review, replaces it, and then
 revalidates both the trusted snapshot and the exact installed configuration
 before deleting its backup. Removal maintains the normal kernel and all normal
-initramfs as a fully validated source before configuration replacement, after
-replacement and after recovery-state detachment. A source that disappears,
+initramfs as a source that passes every validation check before configuration
+replacement, after replacement and after recovery-state detachment. A source
+that disappears,
 changes identity or content, gains a link, contains an ACPI override or matches
 a managed variant aborts removal and restores the owned recovery pair. Stage
 and backup files are created exclusively, so concurrent files, directories or
@@ -382,34 +420,32 @@ fully usable normal entry. A missing, ambiguous, unusable or unverifiable
 normal source must be restored and verified first; no automatic preparation is
 recommended in those states.
 
-Snapshots created by toolkit 2.1.10 are ownership- and integrity-checked only
-so that toolkit-owned files can be refreshed or removed safely. They are shown
-as `refresh-required` and are never trusted for automatic recovery because
-2.1.10 did not inspect initramfs contents before snapshot creation. If the
-normal `linux-cachyos` entry and its payloads pass full validation, option 2
-preserves the 2.1.10 snapshot and offers the normal confirmed stock-reboot
-prompt; after booting stock, choose option 1 to recreate the snapshot. If that
-entry is missing, ambiguous or unusable, the 2.1.10 snapshot is not used and
-external recovery media is required. Removal of either a current or legacy
-owned snapshot always requires one unambiguous normal `linux-cachyos` entry
-whose kernel and every initramfs are regular, stable, canonical, present,
+Legacy snapshots remain ownership- and integrity-checked but are never trusted
+for boot. They are shown as `refresh-required` so toolkit-owned files can be
+refreshed or removed safely, while only a current trusted snapshot can create or
+validate a recovery entry. If the normal `linux-cachyos` entry and its payloads
+pass full validation, option 2 preserves the legacy snapshot and offers the
+normal confirmed stock-reboot prompt; after booting stock, choose option 1 to
+create a current trusted snapshot. If that entry is missing, ambiguous or
+unusable, external recovery media is required. Removal of either a current or
+legacy owned snapshot always requires one unambiguous normal `linux-cachyos`
+entry whose kernel and every initramfs are regular, stable, canonical, present,
 single-linked and verified free of an ACPI override or managed-variant payload.
 Removal does not require the active boot or current BIOS to match stock.
 
 The recovery entry includes a snapshot-bound marker. The dashboard displays
 `STOCK RECOVERY ACTIVE` only when that marker matches a root-owned,
-integrity-checked 2.1.11 manifest and all payload hashes, while the active DSDT
-is independently classified as clean stock revision `0x01072009`. A marker can
-never mask S5, Combined or an unknown DSDT.
+integrity-checked current trusted manifest and all payload hashes, while the
+active DSDT is independently classified as clean stock revision `0x01072009`.
+A marker can never mask S5, Combined or an unknown DSDT.
 
-This is preventive recovery, not reconstruction. For an upgrade from 2.1.9,
-prepare the snapshot while `linux-cachyos` still exists. If currently booted in
-a variant, use `omen-acpi reboot-stock`, then prepare it. If the normal entry
-has already disappeared and no new valid snapshot exists, automatic recovery
-is impossible: `limine.conf.before` and a variant initramfs are deliberately
-insufficient, and external manual recovery media is required. Version 2.1.9's
-similarly named dashboard action could only find and offer an existing normal
-entry; it did not create recovery media.
+This is preventive recovery, not reconstruction. When updating from an earlier
+release, create or refresh the current trusted snapshot while `linux-cachyos`
+still exists. If currently booted in a variant, use `omen-acpi reboot-stock`,
+then prepare it from the clean stock boot. If the normal entry has already
+disappeared and no current trusted snapshot exists, automatic recovery is
+impossible: `limine.conf.before` and a variant initramfs are deliberately
+insufficient, and external manual recovery media is required.
 
 ## Returning to the stock entry
 
@@ -570,7 +606,7 @@ sharing.
 | Status reports `CONFLICT / BLOCKED` | State was modified outside the toolkit. Nothing is changed automatically; remove the entry from a stock boot and install a fresh one. |
 | Status reports `LEGACY / REINSTALL` | Remove the entry, then install a fresh managed one. |
 | Status reports a stale kernel/initramfs snapshot | A system update happened. Run `omen-acpi remove all` then `omen-acpi install both`. |
-| Recovery snapshot is unavailable after upgrading from 2.1.9 | Keep `linux-cachyos`, boot it, then run `omen-acpi prepare-stock-recovery`. |
+| Recovery snapshot is missing or refresh-required after an upgrade | Keep `linux-cachyos`, boot it cleanly, then run `omen-acpi prepare-stock-recovery`. |
 | Normal entry and recovery snapshot are both missing | Automatic recovery is impossible. Do not reuse a variant initramfs; use external manual recovery media. |
 | Recovery manifest or payload hash fails | Nothing is changed. Restore a normal stock boot externally and prepare a fresh snapshot. |
 | Only the ESP recovery payload or only `/var/lib/omen-acpi-stock-recovery` exists | Status reports `modified`. Nothing is repaired or deleted automatically; inspect the incomplete state manually. |
@@ -608,8 +644,8 @@ recover the system manually. An incorrect DSDT can prevent Linux from booting.
 Before using it, understand and accept the following.
 
 - The project is intended **exclusively** for the hardware and BIOS revision
-  stated in [Supported hardware](#supported-hardware). Do not use it on a
-  different model, board revision or BIOS version.
+  stated in [Validated reference hardware](#validated-reference-hardware). Do
+  not use it on a different model, board revision or BIOS version.
 - Secure Boot must be disabled, as documented above. The toolkit signs nothing
   and does not work around Secure Boot.
 - **Always keep a working stock boot entry available.** The toolkit does not
@@ -680,6 +716,18 @@ writes `NVDE`.
 Stable for its single intended target, and experimental by nature. It is a
 reproduction for one confirmed hardware and firmware combination, not a
 universal compatibility claim.
+
+## Development process
+
+This project was developed with assistance from OpenAI Codex. Codex was used to
+support codebase and ACPI-analysis workflows, implementation, code review,
+synthetic test development and documentation.
+
+Hardware observations and real boot and shutdown tests were performed by the
+maintainer on the documented reference machine. Every published change and
+release remains the maintainer's responsibility. AI assistance does not replace
+independent review or real-hardware validation, and no formal independent
+security audit is claimed.
 
 ## Technical references
 

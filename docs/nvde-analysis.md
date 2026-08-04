@@ -7,8 +7,8 @@ Question: does writing `NVDE = 1` during `_PTS`, before `OMPR = 3` and
 the very method the patch invokes to power the GPU down, so it is relevant, and
 an earlier revision of this document — based on the DSDT alone — was wrong to
 call it inert. However the NVIDIA driver already sets it in every condition that
-matters, including after resume (measured, see section 5). The two variants
-shipped in 2.1.9 are correct as they are.
+matters, including after resume (measured, see section 5). The current S5-only
+and Combined transformations are correct as they are.
 
 Tool: [`nvde-audit.py`](nvde-audit.py). Sources: `dsdt.dsl` (23,227 lines, 614
 methods) **and the 23 SSDTs** from the same collection.
@@ -206,10 +206,10 @@ on whoever sets `NVDE`.
 on every resume in about a second, as measured in section 5. Even the one
 scenario in which the minimal patch could have stayed inert does not arise.
 
-**Recommendation: do not add a third variant.** The two variants in 2.1.9 are
-correct as they are. Reintroducing `NVDE = 1` would make the patch self-
-sufficient on paper, but would buy a margin that is not needed while paying a
-real cost: between `_PTS(5)` and the actual power-off, `NVDE = 1` makes the
+**Recommendation: do not add a third variant.** The two currently implemented
+variants are correct as they are. Reintroducing `NVDE = 1` would make the patch
+self-sufficient on paper, but would buy a margin that is not needed while paying
+a real cost: between `_PTS(5)` and the actual power-off, `NVDE = 1` makes the
 branches in `_Q8D` (EC event `0x8D`) and `GM22` (WMI command `20008h` type
 `0x20`) executable, and neither has ever been exercised in that window.
 

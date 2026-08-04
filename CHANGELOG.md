@@ -1,6 +1,41 @@
 # Changelog
 
-## 2.1.11 - 2026-08-03
+## 2.1.11 - Unreleased
+
+- Records maintainer-performed hardware validation on the single HP OMEN MAX
+  16-ap0006sl reference machine, board `8E35`, BIOS `F.13`; no other SKU,
+  board, BIOS or model is claimed as validated or supported.
+- Records real S5-only and Combined boots with the intended managed DSDTs,
+  successful shutdowns without the previous abnormal post-shutdown heating,
+  and successful returns to stock. The verified Combined boot passed the
+  BF01/WQBZ check without related `AE_AML_BUFFER_LIMIT`, `WQBZ` or `WQBE`
+  messages.
+- Records the normal `recover-stock` path from Combined, preserving the
+  existing `linux-cachyos` entry and avoiding an unnecessary recovery entry.
+- Records real removal and recreation of the preventive snapshot from stock.
+  `limine.conf` remained byte-for-byte unchanged and no managed transaction
+  residue remained.
+- Separates the real-hardware results from destructive, corruption,
+  failure-injection and concurrency scenarios covered only by synthetic tests.
+- Renames the version-bound validation plan to the living
+  `docs/validation.md`, representing current `main` while tags retain historical
+  Release records.
+- Adds a development-process section describing OpenAI Codex as an assistance
+  tool while keeping validation and publication responsibility with the
+  maintainer and making no independent-audit claim.
+- Simplifies current README and recovery-menu wording around legacy and trusted
+  snapshots; detailed version history remains in this changelog.
+- Makes `status all` parse the recovery manager's tab-separated `SNAPSHOT`
+  field instead of displaying its raw first `BOOT` record, with a safe
+  `unavailable` fallback.
+- Expands the fixed-width dashboard columns so `Stock recovery`, `Preventive
+  snapshot` and `All commands available` are not truncated, while retaining
+  the 76-column ASCII and Unicode layouts.
+- Rewords the installed-entry recommendation so it neutrally advises running
+  status after kernel or initramfs updates without implying immediate work.
+- Adds frontend and documentation regression coverage for semantic recovery
+  status, current recovery-menu wording, dashboard content and alignment,
+  output modes, the living validation record and the current-docs policy.
 
 - Stock-recovery preparation now inspects every initramfs with `lsinitcpio`,
   rejects any `kernel/firmware/acpi/` content and rejects payloads whose hashes
@@ -66,11 +101,9 @@
   files, directories and valid or broken symlinks are never truncated,
   followed, replaced or removed by transaction cleanup.
 - A missing snapshot is recommended for creation only when both the active boot
-  and the fully validated normal source are suitable. Missing, ambiguous or
-  unusable normal entries now receive fail-closed restoration guidance.
-- Replaced the repository-only 2.1.11 manual-validation document with the
-  explicitly unexecuted `docs/validation-plan-v2.1.11.md`; the obsolete 2.1.10
-  plan remains available from its historical tag but is no longer on `main`.
+  and the normal source passing every validation check are suitable. Missing,
+  ambiguous or unusable normal entries now receive fail-closed restoration
+  guidance.
 - Hardware checks remain restricted to the documented reference configuration.
   Broader hardware support remains future design work and is not available.
 

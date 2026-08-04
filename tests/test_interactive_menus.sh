@@ -180,8 +180,127 @@ contains "$refresh_menu" 'Preventive snapshot: refresh-required' \
     "recovery menu hid the legacy refresh requirement"
 contains "$refresh_menu" 'Managed recovery entry: legacy-untrusted' \
     "recovery menu described a legacy entry as available"
-contains "$refresh_menu" 'A refresh-required 2.1.10 snapshot is never used' \
+contains "$refresh_menu" 'Legacy refresh-required snapshots are never used' \
     "recovery menu proposed automatic legacy recovery"
+contains "$refresh_menu" 'Only a current trusted snapshot can recreate a missing recovery entry' \
+    "recovery menu did not describe the trusted-snapshot requirement"
+
+(
+    require_supported_machine() { :; }
+    ensure_dependencies() { :; }
+    refine_installation_formats_cached() { :; }
+    status_one() { :; }
+    boot_state_label() { printf '%s\n' "${PROBE_STATE:-unknown}"; }
+    boot_state_color() { :; }
+    probe_boot() {
+        PROBE_STATE="$RECOVERY_BOOT"
+        PROBE_REVISION='fixture'
+        PROBE_REASON='fixture'
+    }
+    stock_recovery_status() { printf '%b\n' "$RECOVERY_STATUS_OUTPUT"; }
+
+    check_status_summary() {
+        local boot="$1" manager_output="$2" expected="$3" output
+        RECOVERY_BOOT="$boot"
+        RECOVERY_STATUS_OUTPUT="$manager_output"
+        output="$(status_variants all)"
+        contains "$output" "Stock recovery: $expected" \
+            "status all did not report snapshot state $expected during $boot boot"
+        if grep -Fq 'Stock recovery: BOOT' <<<"$output"; then
+            fail "status all exposed the recovery manager's raw BOOT record"
+        fi
+    }
+
+    for mode in color no-color plain; do
+        case "$mode" in
+            color) COLOR_ENABLED=1; PLAIN_MODE=0 ;;
+            no-color) COLOR_ENABLED=0; PLAIN_MODE=0 ;;
+            plain) COLOR_ENABLED=0; PLAIN_MODE=1 ;;
+        esac
+        set_palette
+        check_status_summary stock \
+            $'BOOT\tstock\nSNAPSHOT\tvalid\nNORMAL_ENTRY\tavailable' valid
+    done
+    COLOR_ENABLED=0
+    PLAIN_MODE=0
+    set_palette
+    check_status_summary combined \
+        $'BOOT\tcombined\nSNAPSHOT\tvalid\nNORMAL_ENTRY\tavailable' valid
+    check_status_summary stock \
+        $'BOOT\tstock\nSNAPSHOT\tmissing\nNORMAL_ENTRY\tavailable' missing
+    check_status_summary stock $'UNAVAILABLE\tNot checked' unavailable
+    check_status_summary s5 $'BOOT\ts5\nNORMAL_ENTRY\tavailable' unavailable
+)
+
+(
+    machine_supported() { return 0; }
+    collect_missing_dependencies() { MISSING_PACKAGES=(); }
+    probe_boot_if_cached() {
+        PROBE_STATE=stock
+        PROBE_REVISION=0x01072009
+        PROBE_CLEAN=1
+        PROBE_REASON=fixture
+    }
+    refine_installation_formats_cached() {
+        PROBE_S5_FORMAT=managed
+        PROBE_COMBINED_FORMAT=managed
+    }
+    boot_state_label() { printf 'STOCK / SAFE\n'; }
+    boot_state_color() { :; }
+    stock_recovery_status() {
+        printf 'BOOT\tstock\nSNAPSHOT\tvalid\nNORMAL_ENTRY\tavailable\n'
+    }
+    variant_dashboard_status() { printf 'CURRENT\n'; }
+    variant_dashboard_color() { :; }
+    pending_description() { return 1; }
+
+    COLOR_ENABLED=0
+    PLAIN_MODE=1
+    UNICODE_ENABLED=0
+    set_palette
+    show_banner >"$work/plain-dashboard.out"
+    plain_dashboard="$(<"$work/plain-dashboard.out")"
+    contains "$plain_dashboard" 'Stock recovery' "dashboard truncated Stock recovery"
+    contains "$plain_dashboard" 'Preventive snapshot' "dashboard truncated Preventive snapshot"
+    contains "$plain_dashboard" 'All commands available' "dashboard truncated dependency description"
+    normalized_dashboard="$(tr -s ' ' <"$work/plain-dashboard.out")"
+    if grep -Fq 'Stock recover Preventive snapshot' <<<"$normalized_dashboard"; then
+        fail "dashboard retained the observed truncated Stock recovery label"
+    fi
+    if grep -Fq 'Dependencies All required command' <<<"$normalized_dashboard"; then
+        fail "dashboard retained the observed truncated dependency description"
+    fi
+    LC_ALL=C grep -q '[^ -~[:space:]]' "$work/plain-dashboard.out" \
+        && fail "plain dashboard emitted a non-ASCII character"
+    grep -q $'\033' "$work/plain-dashboard.out" \
+        && fail "plain dashboard emitted an ANSI escape sequence"
+    while IFS= read -r line; do
+        [[ -z "$line" || "${#line}" -eq 76 ]] \
+            || fail "plain dashboard line width is ${#line}, expected 76"
+    done <"$work/plain-dashboard.out"
+
+    PLAIN_MODE=0
+    UNICODE_ENABLED=1
+    show_banner >"$work/unicode-dashboard.out"
+    grep -Fq '╭' "$work/unicode-dashboard.out" \
+        || fail "normal dashboard did not render Unicode borders"
+    python3 - "$work/unicode-dashboard.out" <<'PY'
+from pathlib import Path
+import sys
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if line and len(line) != 76:
+        raise SystemExit(f"Unicode dashboard line width is {len(line)}, expected 76")
+PY
+
+    recommendation="$(recommended_action)"
+    [[ "$recommendation" == \
+        'Managed entries are installed; run status after kernel or initramfs updates.' ]] \
+        || fail "installed-entry recommendation is not neutral"
+    if grep -Fq 'remove and freshly install each entry' <<<"$recommendation"; then
+        fail "installed-entry recommendation still implies immediate intervention"
+    fi
+)
 
 grep -Fq "printf '  %br.%b Stock boot and recovery" "$ROOT/omen-acpi" || fail "r is not a stable recovery menu entry"
 grep -Fq 'r|R) stock_recovery_menu' "$ROOT/omen-acpi" || fail "r does not always open the recovery submenu"

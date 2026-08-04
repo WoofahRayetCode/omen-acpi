@@ -151,10 +151,21 @@ for recovery_command in prepare-stock-recovery recover-stock reboot-stock remove
     grep -Fq "omen-acpi $recovery_command" <<<"$cli_help" \
         || fail "CLI help omits $recovery_command"
 done
-grep -Fq '2.1.9' "$ROOT/README.md" \
-    || fail "2.1.9 upgrade limitation is not documented"
+readme_text="$(tr '\n' ' ' < "$ROOT/README.md")"
+grep -Fq 'Legacy snapshots remain ownership- and integrity-checked but are never trusted for boot' \
+    <<<"$readme_text" \
+    || fail "legacy snapshot trust limitation is not documented"
 grep -Fq 'external manual recovery' "$ROOT/README.md" \
     || fail "missing-snapshot manual recovery limitation is not documented"
+if grep -Eq 'v?2\.1\.(9|10)' "$ROOT/README.md"; then
+    fail "README retains unnecessary historical release narration"
+fi
+[[ -f "$ROOT/docs/validation.md" ]] \
+    || fail "living validation record is missing"
+[[ ! -e "$ROOT/docs/validation-plan-v2.1.11.md" ]] \
+    || fail "version-bound validation plan still exists"
+grep -Fq '## Development process' "$ROOT/README.md" \
+    || fail "Codex development-process disclaimer is missing"
 for removed_command in migrate restore-legacy refresh; do
     if grep -Eq "^[[:space:]]*omen-acpi ${removed_command}([[:space:]]|$)" <<<"$cli_help"; then
         fail "removed command is still advertised: $removed_command"

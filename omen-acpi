@@ -780,6 +780,12 @@ stock_recovery_status() {
     fi
 }
 
+stock_recovery_snapshot_status() {
+    local output="${1:-}" snapshot=''
+    snapshot="$(awk -F '\t' '$1 == "SNAPSHOT" { print $2; exit }' <<<"$output")"
+    printf '%s\n' "${snapshot:-unavailable}"
+}
+
 recover_stock() {
     local result kind title
     probe_boot
@@ -892,8 +898,8 @@ stock_recovery_menu() {
         printf '     This requires a clean stock boot.\n\n'
         printf '  2. Recover or reboot into a stock boot\n'
         printf '     Use the normal entry when available.\n'
-        printf '     Only a valid 2.1.11 snapshot can recreate a missing recovery entry.\n'
-        printf '     A refresh-required 2.1.10 snapshot is never used for automatic recovery.\n\n'
+        printf '     Only a current trusted snapshot can recreate a missing recovery entry.\n'
+        printf '     Legacy refresh-required snapshots are never used for automatic recovery.\n\n'
         printf '  3. Show detailed recovery status\n\n'
         printf '  4. Remove the managed recovery snapshot and entry\n\n'
         printf '  b. Back\n\n'
@@ -1310,7 +1316,7 @@ status_one() {
 }
 
 status_variants() {
-    local requested rc=0 item_rc=0
+    local requested rc=0 item_rc=0 recovery_output snapshot_status
     requested="$(normalize_variant "${1:-all}")"
     require_supported_machine
     ensure_dependencies status
@@ -1318,7 +1324,9 @@ status_variants() {
     refine_installation_formats_cached
     section "Current boot"
     printf 'State: %b%s%b\n' "$(boot_state_color)$BOLD" "$(boot_state_label)" "$RESET"
-    printf 'Stock recovery: %s\n' "$(stock_recovery_status | head -n 1)"
+    recovery_output="$(stock_recovery_status)"
+    snapshot_status="$(stock_recovery_snapshot_status "$recovery_output")"
+    printf 'Stock recovery: %s\n' "$snapshot_status"
     printf 'Active DSDT revision: %s\n' "$PROBE_REVISION"
     printf 'Detection reason: %s\n' "$PROBE_REASON"
 
@@ -1626,10 +1634,10 @@ pending_workflow_action() {
 
 dashboard_line() {
     local label="$1" value="$2" status="$3" status_color="$4"
-    label="${label:0:13}"
-    value="${value:0:20}"
-    status="${status:0:31}"
-    printf '%s  %-13s %-20s %b%-31s%b      %s\n' \
+    label="${label:0:14}"
+    value="${value:0:22}"
+    status="${status:0:28}"
+    printf '%s  %-14s %-22s %b%-28s%b      %s\n' \
         "$BANNER_VERTICAL" "$label" "$value" "$status_color$BOLD" "$status" "$RESET" "$BANNER_VERTICAL"
 }
 
@@ -1674,7 +1682,7 @@ show_banner() {
 
     collect_missing_dependencies
     if ((${#MISSING_PACKAGES[@]} == 0)); then
-        dependency_text="All required commands available"
+        dependency_text="All commands available"
         dependency_status="READY"
         dashboard_line "Dependencies" "$dependency_text" "$dependency_status" "$GREEN"
     else
@@ -1687,8 +1695,8 @@ show_banner() {
     refine_installation_formats_cached
     boot_label="$(boot_state_label)"
     dashboard_line "Current boot" "$PROBE_REVISION" "$boot_label" "$(boot_state_color)"
-    STOCK_RECOVERY_STATUS_LABEL="$(stock_recovery_status | awk -F '\t' '$1=="SNAPSHOT" {print toupper($2); exit}')"
-    [[ -n "$STOCK_RECOVERY_STATUS_LABEL" ]] || STOCK_RECOVERY_STATUS_LABEL='UNAVAILABLE'
+    STOCK_RECOVERY_STATUS_LABEL="$(stock_recovery_snapshot_status "$(stock_recovery_status)")"
+    STOCK_RECOVERY_STATUS_LABEL="${STOCK_RECOVERY_STATUS_LABEL^^}"
     dashboard_line "Stock recovery" "Preventive snapshot" "$STOCK_RECOVERY_STATUS_LABEL" \
         "$([[ "$STOCK_RECOVERY_STATUS_LABEL" == "VALID" ]] && printf '%s' "$GREEN" || printf '%s' "$YELLOW")"
 
@@ -1739,7 +1747,7 @@ recommended_action() {
     elif [[ "$PROBE_STATE" == "stock" && "$STOCK_RECOVERY_STATUS_LABEL" != "VALID" ]]; then
         printf 'Prepare the preventive stock-recovery snapshot before installing a variant.'
     elif [[ "$PROBE_S5_FORMAT" == "managed" || "$PROBE_COMBINED_FORMAT" == "managed" ]]; then
-        printf 'Run status; after a kernel/initramfs update, remove and freshly install each entry.'
+        printf 'Managed entries are installed; run status after kernel or initramfs updates.'
     elif [[ "$PROBE_STATE" == "unknown" || "$PROBE_STATE" == "unavailable" ]]; then
         printf 'Run diagnostics and reboot into the normal Limine entry.'
     else
