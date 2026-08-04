@@ -65,9 +65,10 @@ for file in "${release_files[@]}" SHA256SUMS; do
         -- "$file" "$staging/$name/$file"
 done
 
-# Fixed owner, sorted order and a fixed mtime keep the archive reproducible.
+# Fixed owner, sorted order and a fixed UTC epoch mtime keep the archive
+# reproducible across local timezone settings.
 tar --owner=0 --group=0 --numeric-owner --sort=name \
-    --mtime='2026-08-01 00:00:00' \
+    --mtime='@1785542400' \
     -czf "$OUTPUT_DIR/$name.tar.gz" -C "$staging" "$name"
 
 ( cd "$OUTPUT_DIR" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )

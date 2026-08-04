@@ -2,6 +2,8 @@
 
 ## 2.1.11 - Unreleased
 
+- Release archives now use a fixed UTC epoch mtime and are byte-identical when
+  built under different local timezones.
 - Records maintainer-performed hardware validation on the single HP OMEN MAX
   16-ap0006sl reference machine, board `8E35`, BIOS `F.13`; no other SKU,
   board, BIOS or model is claimed as validated or supported.

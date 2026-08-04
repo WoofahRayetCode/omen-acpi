@@ -1046,12 +1046,39 @@ fi
 grep -Fq 'scripts/04-stock-recovery.py does not declare version 2.1.11' "$work/version-build.err" \
     || fail "release builder did not diagnose the Python manager mismatch"
 
-release_output="$work/release"
-mkdir -p "$release_output" "$work/verify-home"
-"$ROOT/tools/make-release.sh" "$release_output" >"$work/release-build.out"
+release_output="$work/release-utc"
+release_output_rome="$work/release-europe-rome"
+release_archive='omen-acpi-toolkit-v2.1.11.tar.gz'
+mkdir -p "$release_output" "$release_output_rome" "$work/verify-home"
+TZ=UTC "$ROOT/tools/make-release.sh" "$release_output" \
+    >"$work/release-build-utc.out"
+TZ=Europe/Rome "$ROOT/tools/make-release.sh" "$release_output_rome" \
+    >"$work/release-build-europe-rome.out"
+cmp -- "$release_output/$release_archive" "$release_output_rome/$release_archive" \
+    || fail "release archive depends on the local timezone"
+cmp -- "$release_output/${release_archive}.sha256" \
+    "$release_output_rome/${release_archive}.sha256" \
+    || fail "release archive checksum depends on the local timezone"
+python3 - "$release_output/$release_archive" \
+    "$release_output_rome/$release_archive" <<'PY'
+import sys
+import tarfile
+
+expected_mtime = 1785542400
+for archive in sys.argv[1:]:
+    with tarfile.open(archive, "r:gz") as release:
+        mismatches = [
+            (member.name, member.mtime)
+            for member in release.getmembers()
+            if member.mtime != expected_mtime
+        ]
+    if mismatches:
+        raise SystemExit(f"archive members have unexpected mtimes in {archive}: {mismatches}")
+print("release archives are timezone-independent with the fixed UTC epoch mtime")
+PY
 HOME="$work/verify-home" XDG_DATA_HOME="$work/verify-home/.local/share" \
     "$ROOT/update.sh" --verify-only --archive \
-    "$release_output/omen-acpi-toolkit-v2.1.11.tar.gz" >"$work/verify-only.out"
+    "$release_output/$release_archive" >"$work/verify-only.out"
 grep -Fq 'Verification completed; installation was not started.' "$work/verify-only.out" \
     || fail "updater verify-only did not complete verification"
 if find "$work/verify-home" -mindepth 1 -print -quit | grep -q .; then
@@ -1060,14 +1087,14 @@ fi
 
 mismatch_root="$work/updater-version-mismatch"
 mkdir -p "$mismatch_root/extracted" "$mismatch_root/assets" "$work/mismatch-home"
-tar -xzf "$release_output/omen-acpi-toolkit-v2.1.11.tar.gz" -C "$mismatch_root/extracted"
+tar -xzf "$release_output/$release_archive" -C "$mismatch_root/extracted"
 mismatch_release="$mismatch_root/extracted/omen-acpi-toolkit-v2.1.11"
 sed -i 's/^VERSION = "2.1.11"$/VERSION = "9.9.9"/' \
     "$mismatch_release/scripts/04-stock-recovery.py"
 mismatch_hash="$(sha256sum "$mismatch_release/scripts/04-stock-recovery.py" | awk '{print $1}')"
 sed -i "s|^[0-9a-f]\{64\}  scripts/04-stock-recovery.py$|$mismatch_hash  scripts/04-stock-recovery.py|" \
     "$mismatch_release/SHA256SUMS"
-tar --owner=0 --group=0 --numeric-owner --sort=name --mtime='2026-08-01 00:00:00' \
+tar --owner=0 --group=0 --numeric-owner --sort=name --mtime='@1785542400' \
     -czf "$mismatch_root/assets/omen-acpi-toolkit-v2.1.11.tar.gz" \
     -C "$mismatch_root/extracted" omen-acpi-toolkit-v2.1.11
 ( cd "$mismatch_root/assets" && sha256sum omen-acpi-toolkit-v2.1.11.tar.gz \
