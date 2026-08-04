@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.1.11 - Unreleased
+## 2.1.11 - 2026-08-04
 
 - Release archives now use a fixed UTC epoch mtime and are byte-identical when
   built under different local timezones.
@@ -22,9 +22,9 @@
 - Renames the version-bound validation plan to the living
   `docs/validation.md`, representing current `main` while tags retain historical
   Release records.
-- Adds a development-process section describing OpenAI Codex as an assistance
-  tool while keeping validation and publication responsibility with the
-  maintainer and making no independent-audit claim.
+- Documents the substantially AI-assisted engineering workflow using OpenAI
+  Codex, the maintainer's direction and hardware validation, and the absence of
+  independent specialist human review or a formal security audit.
 - Simplifies current README and recovery-menu wording around legacy and trusted
   snapshots; detailed version history remains in this changelog.
 - Makes `status all` parse the recovery manager's tab-separated `SNAPSHOT`

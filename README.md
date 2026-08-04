@@ -719,15 +719,18 @@ universal compatibility claim.
 
 ## Development process
 
-This project was developed with assistance from OpenAI Codex. Codex was used to
-support codebase and ACPI-analysis workflows, implementation, code review,
-synthetic test development and documentation.
+This project was developed through a substantially AI-assisted workflow using
+OpenAI Codex. Codex generated significant portions of the Bash and Python
+implementation, automated tests and documentation, and was used for code review
+and ACPI-analysis workflows under iterative direction from the maintainer.
 
-Hardware observations and real boot and shutdown tests were performed by the
-maintainer on the documented reference machine. Every published change and
-release remains the maintainer's responsibility. AI assistance does not replace
-independent review or real-hardware validation, and no formal independent
-security audit is claimed.
+The maintainer identified and reproduced the hardware problem, supplied the
+machine observations, executed the documented real-hardware boot, shutdown and
+recovery tests, and made the final publication decisions.
+
+The code has not received independent human review by an ACPI or
+systems-programming specialist. AI-generated tests and reviews do not constitute
+independent assurance, and no formal security audit is claimed.
 
 ## Technical references
 

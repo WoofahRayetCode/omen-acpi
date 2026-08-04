@@ -92,5 +92,6 @@ claim.
 The candidate is acceptable only while the complete repository suite, Bash and
 Python syntax checks, NVDE self-test, strict `SHA256SUMS` verification,
 reproducible archive comparison, archive-content audit and non-installing updater
-verification all pass from a clean tree. Version 2.1.11 remains unreleased until
-a separate final audit authorizes its tag and GitHub Release.
+verification all pass from a clean tree. Tagging and publishing version 2.1.11
+require a separate final audit of the exact release commit after every gate
+above passes.
