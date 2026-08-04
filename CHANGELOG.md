@@ -2,6 +2,9 @@
 
 ## 2.1.11 - 2026-08-04
 
+- Streamlines the packaged README into a self-contained operational and safety
+  guide, moving extended CLI usage, recovery internals and technical references
+  into versioned documentation without changing runtime behaviour or support.
 - Release archives now use a fixed UTC epoch mtime and are byte-identical when
   built under different local timezones.
 - Records maintainer-performed hardware validation on the single HP OMEN MAX
