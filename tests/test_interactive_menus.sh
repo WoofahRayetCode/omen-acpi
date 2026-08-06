@@ -65,7 +65,7 @@ if grep -En 'eval .*SETUP|SETUP.*eval' "$ROOT/omen-acpi" >/dev/null; then fail "
 
 confirmation="$work/confirmation"
 confirm() { printf '%s\n' "$1" > "$confirmation"; return 1; }
-require_supported_machine() { :; }
+require_transform_machine() { :; }
 require_stock_boot() { printf 'modified\n' >> "$work/actions"; }
 guided_output="$(guided_setup <<<2)"
 contains "$guided_output" 'Selected setup: Combined' "readable setup selection was not shown"
