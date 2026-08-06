@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.1.11"
+readonly VERSION="2.2.0"
 readonly APP_NAME="OMEN ACPI Toolkit"
 readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 readonly EXPECTED_BOARD="8E35"
@@ -56,6 +56,8 @@ readonly PENDING_FILE="$USER_STATE_ROOT/pending-action"
 COLOR_ENABLED=0
 UNICODE_ENABLED=0
 ASSUME_YES=0
+UNVALIDATED_CONSENT=0
+unset OMEN_ACPI_UNVALIDATED_OPT_IN
 PLAIN_MODE=0
 STOCK_RECOVERY_PREPARED=0
 STOCK_RECOVERY_STATUS_LABEL="NOT CHECKED"
@@ -186,9 +188,43 @@ machine_supported() {
         && "$MACHINE_BIOS" == "$EXPECTED_BIOS" ]]
 }
 
-require_supported_machine() {
-    if ! machine_supported; then
-        die "Unsupported machine: product='$MACHINE_PRODUCT', board='$MACHINE_BOARD', BIOS='$MACHINE_BIOS'."
+machine_readable() {
+    machine_values
+    [[ -n "$MACHINE_PRODUCT" && -n "$MACHINE_BOARD" && -n "$MACHINE_BIOS" ]]
+}
+
+require_transform_machine() {
+    if machine_supported; then
+        return 0
+    fi
+    machine_readable \
+        || die "DMI identity is missing, empty or unreadable; unvalidated opt-in is unavailable."
+    (( UNVALIDATED_CONSENT == 0 )) || return 0
+
+    section "UNVALIDATED / OPT-IN REQUIRED"
+    printf 'Only this reference identity has been validated:\n'
+    printf '  Product: %s\n  Board:   %s\n  BIOS:    %s\n\n' \
+        "$EXPECTED_PRODUCT" "$EXPECTED_BOARD" "$EXPECTED_BIOS"
+    printf 'Detected on this machine:\n'
+    printf '  Product: %s\n  Board:   %s\n  BIOS:    %s\n\n' \
+        "$MACHINE_PRODUCT" "$MACHINE_BOARD" "$MACHINE_BIOS"
+    printf 'This machine is unvalidated. Opting in does not imply compatibility or support.\n'
+    printf 'The toolkit will only attempt the existing v2.1.11 transformations, and all of\n'
+    printf 'their exact structural checks remain mandatory. Many machines will be rejected.\n'
+    printf 'An incompatible ACPI override can cause boot failure, data loss, instability,\n'
+    printf 'abnormal thermal behaviour, battery drain or the need for manual recovery.\n'
+    printf 'By proceeding, you accept full responsibility for these consequences.\n\n'
+    confirm_dangerous "Proceed on this unvalidated machine?" no \
+        || die "Unvalidated-machine opt-in was not granted."
+    UNVALIDATED_CONSENT=1
+    export OMEN_ACPI_UNVALIDATED_OPT_IN=1
+}
+
+run_root_engine() {
+    if (( UNVALIDATED_CONSENT )); then
+        "$SUDO_BIN" -- env OMEN_ACPI_UNVALIDATED_OPT_IN=1 "$@"
+    else
+        "$SUDO_BIN" -- "$@"
     fi
 }
 
@@ -213,7 +249,7 @@ gzip|zgrep gzip
 gawk|awk
 tar|tar
 sed|sed
-coreutils|sha256sum realpath install mktemp stat od tee wc tr head cat
+coreutils|sha256sum realpath install mktemp stat od tee wc tr head cat env
 sudo|sudo
 systemd|systemctl journalctl
 limine-entry-tool|limine-entry-tool
@@ -295,7 +331,7 @@ EOF
 mkinitcpio|lsinitcpio
 util-linux|flock findmnt
 python|python3
-coreutils|sha256sum realpath stat cp mv sync
+coreutils|sha256sum realpath stat cp mv sync env
 sudo|sudo
 systemd|systemctl
 EOF
@@ -734,7 +770,6 @@ require_stock_boot() {
 
 reboot_stock() {
     local resume_action="${1:-}" resume_variant="${2:-}"
-    require_supported_machine
     ensure_dependencies probe
     probe_boot
     if [[ "$PROBE_STATE" == "stock" && "$PROBE_CLEAN" == "1" ]]; then
@@ -746,10 +781,11 @@ reboot_stock() {
 }
 
 stock_recovery_manager() {
-    "$SUDO_BIN" -- "$STOCK_RECOVERY" "$@"
+    run_root_engine "$STOCK_RECOVERY" "$@"
 }
 
 prepare_stock_recovery() {
+    require_transform_machine
     ensure_dependencies stock-recovery
     ensure_admin
     section "Prepare preventive stock recovery"
@@ -758,6 +794,7 @@ prepare_stock_recovery() {
 }
 
 prepare_stock_recovery_interactive() {
+    require_transform_machine
     probe_boot
     if [[ "$PROBE_STATE" != "stock" || "$PROBE_CLEAN" != "1" ]]; then
         die "A preventive recovery snapshot can only be created during a clean verified stock boot."
@@ -823,7 +860,7 @@ recover_stock() {
         NORMAL)
             info "The normal stock entry still exists and was not modified."
             if grep -Fxq $'SNAPSHOT\trefresh-required' <<<"$preview"; then
-                info "After booting stock, choose recovery option 1 to create a trusted 2.1.11 snapshot."
+                info "After booting stock, choose recovery option 1 to create a trusted 2.2.0 snapshot."
             fi
             show_stock_reboot_prompt
             ;;
@@ -958,7 +995,7 @@ latest_artifact() {
 }
 
 latest_source() {
-    latest_artifact "$SOURCE_POINTER" 'omen-ap0006sl-acpi-source-*.tar.gz'
+    latest_artifact "$SOURCE_POINTER" 'omen-*-acpi-source-*.tar.gz'
 }
 
 build_pointer_for() {
@@ -971,7 +1008,7 @@ build_pointer_for() {
 
 latest_build() {
     local variant="$1"
-    latest_artifact "$(build_pointer_for "$variant")" "omen-dsdt-f13-${variant}-build-*.tar.gz"
+    latest_artifact "$(build_pointer_for "$variant")" "omen-dsdt-*-${variant}-build-*.tar.gz"
 }
 
 run_logged() {
@@ -1001,7 +1038,7 @@ run_logged() {
 capture_source() {
     local resume_action="${1:-collect}" resume_variant="${2:-}"
     local preserve_pending="${3:-0}" result_file source_path
-    require_supported_machine
+    require_transform_machine
     require_stock_boot "$resume_action" "$resume_variant" || return 4
     ensure_dependencies collect
     ensure_user_directories
@@ -1045,7 +1082,7 @@ normalize_variant() {
 
 build_one() {
     local variant="$1" source_archive="${2:-}" result_file build_path pointer
-    require_supported_machine
+    require_transform_machine
     ensure_user_directories
 
     if [[ -z "$source_archive" ]]; then
@@ -1215,7 +1252,7 @@ install_one() {
 
     section "Install $variant Limine entry"
     ensure_admin
-    run_logged "install-$variant" "$SUDO_BIN" -- "$MANAGER" install "$variant" "$build_archive"
+    run_logged "install-$variant" run_root_engine "$MANAGER" install "$variant" "$build_archive"
 }
 
 install_variants() {
@@ -1228,7 +1265,7 @@ install_variants() {
         [[ -f "$build_archive" ]] || die "Build archive not found: $build_archive"
         build_archive="$(realpath -- "$build_archive")"
     fi
-    require_supported_machine
+    require_transform_machine
     if [[ -n "$build_archive" ]]; then
         ensure_dependencies probe
         probe_boot
@@ -1318,7 +1355,6 @@ status_one() {
 status_variants() {
     local requested rc=0 item_rc=0 recovery_output snapshot_status
     requested="$(normalize_variant "${1:-all}")"
-    require_supported_machine
     ensure_dependencies status
     probe_boot
     refine_installation_formats_cached
@@ -1417,12 +1453,15 @@ doctor() {
 
     if machine_supported; then
         success "Machine: supported ($MACHINE_PRODUCT / $MACHINE_BOARD / $MACHINE_BIOS)"
+    elif machine_readable; then
+        warn "Machine: UNVALIDATED / OPT-IN REQUIRED ($MACHINE_PRODUCT / $MACHINE_BOARD / $MACHINE_BIOS)"
     else
-        warn "Machine: unsupported ($MACHINE_PRODUCT / $MACHINE_BOARD / $MACHINE_BIOS)"
+        warn "Machine: DMI UNAVAILABLE / BLOCKED"
     fi
 
     if ! print_missing_dependencies full; then
         if [[ "$fix" == "--fix" ]]; then
+            require_transform_machine
             install_dependencies full
         fi
     fi
@@ -1521,7 +1560,7 @@ guided_setup() {
     section "Guided setup"
     printf 'This workflow compiles and installs a machine-specific ACPI table override.\n'
     printf 'It never flashes the BIOS and never replaces the normal CachyOS entry.\n'
-    require_supported_machine
+    require_transform_machine
     if [[ -z "$requested" ]]; then
         choose_setup_variant || return 0
         requested="$SETUP_VARIANT_RESULT"
@@ -1636,8 +1675,8 @@ dashboard_line() {
     local label="$1" value="$2" status="$3" status_color="$4"
     label="${label:0:14}"
     value="${value:0:22}"
-    status="${status:0:28}"
-    printf '%s  %-14s %-22s %b%-28s%b      %s\n' \
+    status="${status:0:29}"
+    printf '%s  %-14s %-22s %b%-29s%b     %s\n' \
         "$BANNER_VERTICAL" "$label" "$value" "$status_color$BOLD" "$status" "$RESET" "$BANNER_VERTICAL"
 }
 
@@ -1675,9 +1714,12 @@ show_banner() {
     if machine_supported; then
         product_text="8E35 / BIOS F.13"
         dashboard_line "Machine" "$product_text" "READY" "$GREEN"
+    elif machine_readable; then
+        product_text="${MACHINE_BOARD} / ${MACHINE_BIOS}"
+        dashboard_line "Machine" "$product_text" "UNVALIDATED / OPT-IN REQUIRED" "$YELLOW"
     else
         product_text="${MACHINE_BOARD:-unknown} / ${MACHINE_BIOS:-unknown}"
-        dashboard_line "Machine" "$product_text" "BLOCKED" "$RED"
+        dashboard_line "Machine" "$product_text" "DMI UNAVAILABLE / BLOCKED" "$RED"
     fi
 
     collect_missing_dependencies
@@ -1691,12 +1733,14 @@ show_banner() {
         dashboard_line "Dependencies" "$dependency_text" "$dependency_status" "$YELLOW"
     fi
 
-    probe_boot_if_cached >/dev/null 2>&1 || true
-    refine_installation_formats_cached
+    if machine_supported || (( UNVALIDATED_CONSENT )); then
+        probe_boot_if_cached >/dev/null 2>&1 || true
+        refine_installation_formats_cached
+        STOCK_RECOVERY_STATUS_LABEL="$(stock_recovery_snapshot_status "$(stock_recovery_status)")"
+        STOCK_RECOVERY_STATUS_LABEL="${STOCK_RECOVERY_STATUS_LABEL^^}"
+    fi
     boot_label="$(boot_state_label)"
     dashboard_line "Current boot" "$PROBE_REVISION" "$boot_label" "$(boot_state_color)"
-    STOCK_RECOVERY_STATUS_LABEL="$(stock_recovery_snapshot_status "$(stock_recovery_status)")"
-    STOCK_RECOVERY_STATUS_LABEL="${STOCK_RECOVERY_STATUS_LABEL^^}"
     dashboard_line "Stock recovery" "Preventive snapshot" "$STOCK_RECOVERY_STATUS_LABEL" \
         "$([[ "$STOCK_RECOVERY_STATUS_LABEL" == "VALID" ]] && printf '%s' "$GREEN" || printf '%s' "$YELLOW")"
 
@@ -1724,8 +1768,10 @@ show_banner() {
 
 recommended_action() {
     local pending=''
-    if ! machine_supported; then
-        printf 'This toolkit is locked to a different machine or BIOS.'
+    if ! machine_readable; then
+        printf 'DMI identity is unavailable; transformation workflows are blocked.'
+    elif ! machine_supported; then
+        printf 'Transformations require explicit unvalidated-machine opt-in.'
     elif pending="$(pending_description 2>/dev/null)"; then
         if pending_is_same_boot; then
             printf 'Reboot into the normal Limine entry to continue %s.' "$pending"
@@ -1874,7 +1920,7 @@ interactive_main() {
             1) ( guided_setup ) || true; pause_for_user; draw_home_dashboard ;;
             2) ( doctor; printf '\n'; status_variants all ) || true; pause_for_user; draw_home_dashboard ;;
             3) manage_menu; draw_home_dashboard ;;
-            4) ( install_dependencies full ) || true; pause_for_user; draw_home_dashboard ;;
+            4) ( require_transform_machine; install_dependencies full ) || true; pause_for_user; draw_home_dashboard ;;
             5) advanced_menu; draw_home_dashboard ;;
             r|R) stock_recovery_menu; draw_home_dashboard ;;
             p|P) ( pending_workflow_action ) || true; pause_for_user; draw_home_dashboard ;;
@@ -1980,6 +2026,7 @@ main() {
                 die "Usage: omen-acpi dependencies [--install]"
             fi
             if [[ "${1:-}" == "--install" ]]; then
+                require_transform_machine
                 install_dependencies full
             else
                 print_missing_dependencies full

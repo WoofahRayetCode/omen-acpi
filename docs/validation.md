@@ -14,6 +14,11 @@ recorded on 4 August 2026. Automated fixtures exercise destructive, corrupt and
 concurrent states without reproducing them on the physical machine. An absent
 test on other hardware means **not validated**, not expected to work.
 
+The v2.2.0 reference-machine transformation produces byte-identical S5-only and
+Combined AML payloads to v2.1.11 from the same stock DSDT. Real-hardware boot
+and shutdown results were established with v2.1.11. Version 2.2.0 adds an
+unvalidated-hardware opt-in without changing the reference transformation.
+
 ## Reference hardware
 
 | Property | Validated value |
@@ -82,7 +87,8 @@ physical hardware for safety:
 - Any different BIOS, board or physical hardware.
 - Any other SKU in the `16-ap0xxx` family.
 - Compatibility inferred only from the shared DMI product string.
-- Any broader hardware opt-in path; none is currently available.
+- Any real-hardware execution of the v2.2.0 unvalidated-machine opt-in. Its
+  consent, fail-closed and artifact-binding paths are synthetic-only.
 
 Automated success cannot turn any of these items into a support or compatibility
 claim.
@@ -92,6 +98,7 @@ claim.
 The candidate is acceptable only while the complete repository suite, Bash and
 Python syntax checks, NVDE self-test, strict `SHA256SUMS` verification,
 reproducible archive comparison, archive-content audit and non-installing updater
-verification all pass from a clean tree. Tagging and publishing version 2.1.11
-require a separate final audit of the exact release commit after every gate
-above passes.
+verification all pass from a clean tree. Version 2.2.0 remains Unreleased and
+still requires independent review. Because the reference path is byte-for-byte
+equivalent, new real-hardware validation on the reference machine is not
+required. No non-reference hardware has been physically validated.

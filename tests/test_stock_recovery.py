@@ -109,6 +109,36 @@ class RecoveryTest(unittest.TestCase):
         (self.root / "sys/class/dmi/id/board_name").write_text("WRONG\n")
         with self.assertRaises(recovery.Failure): recovery.prepare()
 
+    def test_opted_in_snapshot_records_and_requires_current_identity(self):
+        identity = ("Opted product", "Opted board", "Opted BIOS")
+        dmi = self.root / "sys/class/dmi/id"
+        for name, value in zip(("product_name", "board_name", "bios_version"), identity):
+            (dmi / name).write_text(value + "\n")
+        with mock.patch.dict(os.environ, {"OMEN_ACPI_UNVALIDATED_OPT_IN": "1"}):
+            data = self.prepare()
+        self.assertEqual(
+            tuple(data["machine"][key] for key in ("product", "board", "bios")),
+            identity,
+        )
+        (dmi / "bios_version").write_text("New BIOS\n")
+        with self.assertRaises(recovery.Failure):
+            recovery.load_trusted_snapshot()
+
+    def test_self_consistent_foreign_snapshot_is_rejected(self):
+        self.prepare()
+        manifest = recovery.STATE() / "manifest.json"
+        data = json.loads(manifest.read_text())
+        data["machine"]["product"] = "Another machine"
+        canonical = json.dumps(
+            {key: value for key, value in data.items() if key != "snapshot_id"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        data["snapshot_id"] = recovery.hashlib.sha256(canonical).hexdigest()
+        manifest.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        with self.assertRaises(recovery.Failure):
+            recovery.load_owned_snapshot()
+
     def test_missing_and_duplicate_normal_entry_are_rejected(self):
         config = self.esp / "limine.conf"
         config.write_text("timeout: 5\n")
@@ -160,8 +190,8 @@ class RecoveryTest(unittest.TestCase):
         with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
 
     def test_valid_2_1_10_snapshot_can_be_verified_and_refreshed(self):
-        self.assertEqual(recovery.OWNED_SNAPSHOT_VERSIONS, {"2.1.10", "2.1.11"})
-        self.assertEqual(recovery.TRUSTED_SNAPSHOT_VERSIONS, {"2.1.11"})
+        self.assertEqual(recovery.OWNED_SNAPSHOT_VERSIONS, {"2.1.10", "2.1.11", "2.2.0"})
+        self.assertEqual(recovery.TRUSTED_SNAPSHOT_VERSIONS, {"2.1.11", "2.2.0"})
         self.prepare(); data = self.rewrite_snapshot()
         self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.1.10")
         with self.assertRaises(recovery.Failure): recovery.load_trusted_snapshot()
@@ -177,7 +207,7 @@ class RecoveryTest(unittest.TestCase):
         self.assertIn("RECOVERY_ENTRY\tlegacy-untrusted", output.getvalue())
         config.write_text(self.original)
         recovery.prepare()
-        self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.1.11")
+        self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.2.0")
         output = io.StringIO()
         with redirect_stdout(output): recovery.status()
         self.assertIn("SNAPSHOT\tvalid", output.getvalue())
@@ -778,7 +808,7 @@ class RecoveryTest(unittest.TestCase):
                     original_check = recovery.require_same_owned_snapshot
                     calls = 0
 
-                    def mutate_before_check(esp, initial):
+                    def mutate_before_check(esp, initial, **kwargs):
                         nonlocal calls
                         calls += 1
                         if calls == injection_call:
@@ -788,7 +818,7 @@ class RecoveryTest(unittest.TestCase):
                                 (self.esp / "omen-acpi-stock-recovery/module-001.bin").write_bytes(
                                     b"foreign-payload"
                                 )
-                        return original_check(esp, initial)
+                        return original_check(esp, initial, **kwargs)
 
                     with mock.patch.object(recovery, "require_same_owned_snapshot",
                                            side_effect=mutate_before_check):
@@ -955,10 +985,10 @@ class RecoveryTest(unittest.TestCase):
         original_check = recovery.require_same_owned_snapshot
         calls = 0
 
-        def edit_during_first_review(esp, initial):
+        def edit_during_first_review(esp, initial, **kwargs):
             nonlocal calls
             calls += 1
-            result = original_check(esp, initial)
+            result = original_check(esp, initial, **kwargs)
             if calls == 1:
                 config.write_bytes(external)
             return result
@@ -995,10 +1025,10 @@ class RecoveryTest(unittest.TestCase):
                     original_check = recovery.require_same_owned_snapshot
                     calls = 0
 
-                    def change_normal_during_review(esp, initial):
+                    def change_normal_during_review(esp, initial, **kwargs):
                         nonlocal calls
                         calls += 1
-                        result = original_check(esp, initial)
+                        result = original_check(esp, initial, **kwargs)
                         expected_call = 1 if case == "during-snapshot-review" else 2
                         if calls == expected_call:
                             if case == "during-snapshot-review":
@@ -1015,10 +1045,15 @@ class RecoveryTest(unittest.TestCase):
                     original_load = recovery.load_owned_snapshot_record
                     injected = False
 
-                    def change_normal_after_detach(esp, *, state_path=None, payload_path=None):
+                    def change_normal_after_detach(
+                        esp, *, state_path=None, payload_path=None,
+                        require_current_machine=True
+                    ):
                         nonlocal injected
-                        result = original_load(esp, state_path=state_path,
-                                               payload_path=payload_path)
+                        result = original_load(
+                            esp, state_path=state_path, payload_path=payload_path,
+                            require_current_machine=require_current_machine
+                        )
                         if state_path is not None and not injected:
                             injected = True
                             module.unlink()
@@ -1152,10 +1187,10 @@ class RecoveryTest(unittest.TestCase):
                             config.write_text(self.original)
 
     def test_remove_owned_current_and_legacy_snapshots_with_valid_normal_entry(self):
-        for version in ("2.1.11", "2.1.10"):
+        for version in ("2.2.0", "2.1.11", "2.1.10"):
             with self.subTest(version=version):
                 data = self.prepare()
-                if version == "2.1.10": data = self.rewrite_snapshot()
+                if version != recovery.VERSION: data = self.rewrite_snapshot(version)
                 (self.esp / "limine.conf").write_text(
                     self.original + "\n" + recovery.owned_block(data) + "\n"
                 )
@@ -1165,11 +1200,11 @@ class RecoveryTest(unittest.TestCase):
                 self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
 
     def test_remove_current_and_legacy_does_not_require_stock_boot_or_current_bios(self):
-        for version in ("2.1.11", "2.1.10"):
+        for version in ("2.2.0", "2.1.11", "2.1.10"):
             for boot in ("s5", "combined"):
                 with self.subTest(version=version, boot=boot):
                     data = self.prepare()
-                    if version == "2.1.10": data = self.rewrite_snapshot()
+                    if version != recovery.VERSION: data = self.rewrite_snapshot(version)
                     config = self.esp / "limine.conf"
                     config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
                     (self.root / "sys/class/dmi/id/bios_version").write_text("F.99\n")
@@ -1195,7 +1230,7 @@ class RecoveryTest(unittest.TestCase):
             recovery.status()
         report = output.getvalue()
         for field in ("BOOT\tstock", "DSDT_REVISION\t", "DETECTION\t", "SNAPSHOT\tvalid",
-                      "SNAPSHOT_CREATED\t", "SNAPSHOT_VERSION\t2.1.11", "KERNEL\t",
+                      "SNAPSHOT_CREATED\t", "SNAPSHOT_VERSION\t2.2.0", "KERNEL\t",
                       "MODULES\t2", "HASHES\tverified", "NORMAL_ENTRY\tavailable",
                       "RECOVERY_ENTRY\tmissing", "RECOMMENDATION\t"):
             self.assertIn(field, report)

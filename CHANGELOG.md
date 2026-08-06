@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.2.0 - Unreleased
+
+- Adds a process-local, explicit opt-in for attempting the unchanged v2.1.11
+  transformations on a different but fully readable DMI identity. Only `y` or
+  `yes` at `Proceed on this unvalidated machine? [y/N]` authorizes; `--yes`,
+  non-interactive stdin, missing DMI and every other response fail closed.
+- Requests opt-in before dependency installation, administrator access,
+  artifact creation, persistent locks or boot/system writes. The CLI passes one
+  undocumented internal environment indicator to private engines; it creates no
+  token, nonce, capability or consent file and persists no consent.
+- Keeps every v2.1.11 structural, compilation, AML, boot, GPU, Limine, kernel,
+  initramfs, ownership, transaction, rollback and recovery check mandatory.
+  The opt-in replaces only exact DMI equality and never installs reference AML.
+- Records actual product, board, BIOS and stock-DSDT provenance for opted-in
+  source, build, installed state and recovery snapshots. Machine or BIOS changes
+  invalidate reuse; historical v2.1.11 formats remain reference-only.
+- Keeps status, diagnostics, removal and managed stock-return/recovery paths
+  available without a new opt-in, while preserving exact ownership checks.
+- Adds synthetic consent, engine-gate, structural-rejection, artifact-identity,
+  BIOS-change and no-pre-consent-side-effect coverage. No new ASL parser,
+  structural generalization or runtime authorization subsystem is introduced.
+
 ## 2.1.11 - 2026-08-04
 
 - Streamlines the packaged README into a self-contained operational and safety

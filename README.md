@@ -11,9 +11,10 @@ The toolkit builds a replacement DSDT that extends `_PTS`, installs it in a
 **separate experimental Limine entry**, and leaves the normal boot entry
 untouched.
 
-> **This is not a generic HP OMEN fix.** It targets one exact retail model,
-> board and BIOS revision. Version 2.1.11 has no opt-in or bypass for other
-> hardware. Read [Risks and limits](#risks-and-limits) before using it.
+> **This is not a generic HP OMEN fix.** Only one exact retail model, board and
+> BIOS revision has been validated. Version 2.2.0 is unreleased and adds only
+> an explicit, unsupported opt-in attempt for other readable DMI identities.
+> Read [Risks and limits](#risks-and-limits) before using it.
 
 ## Validated reference hardware
 
@@ -37,9 +38,34 @@ model, SKU, board or BIOS is validated or supported.
 
 Both variants, normal installation and removal, return to stock, and preventive
 recovery creation, removal and recreation were tested on the reference machine.
-Version 2.1.11 accepts only the exact supported identity: an experimental
-hardware opt-in is not available. If any identity value differs, do not try to
-bypass the checks.
+No other machine is validated, compatible or supported.
+
+## Unvalidated-machine opt-in
+
+With a different but completely readable product, board or BIOS value, every
+transformation workflow is classified exclusively as
+`UNVALIDATED / OPT-IN REQUIRED`. Before dependency installation, `sudo`, user
+artifact directories, persistent locks or system writes, the CLI shows the
+validated reference identity, detected DMI values, the lack of any compatibility
+or support claim, possible consequences and the user's responsibility. It then
+asks exactly:
+
+```text
+Proceed on this unvalidated machine? [y/N]
+```
+
+Only `y` or `yes`, case-insensitively, authorizes that process-local attempt.
+The default, any other answer, non-interactive stdin and unreadable or empty DMI
+all fail closed. `--yes` never answers this question. Consent is not saved, so a
+new invocation or a resumed workflow after reboot asks again.
+
+Opt-in replaces only the exact DMI comparison. It does not relax OEM ID, OEM
+table ID `8E35`, original ACPI header and revision, `_PTS`, `WQBZ` or `WQBE`
+patterns, method signatures, `iasl` compilation, AML header/checksum, round trip,
+boot-state, GPU, Secure Boot, kernel, initramfs, Limine, ownership, lock,
+transaction or rollback checks. Many opted-in machines will therefore be
+intentionally rejected. The toolkit always collects and transforms the local
+stock DSDT; it never installs the reference machine's AML.
 
 The toolkit was developed for CachyOS/Arch Linux with mkinitcpio and Limine.
 Strict product, board, BIOS, GPU and ACPI-structure checks reduce accidental
@@ -63,7 +89,8 @@ scenarios were intentionally limited to automated fixtures. The normal entry
 was not deleted on the physical machine, and no recreated emergency recovery
 entry was booted there. Automated tests do not demonstrate compatibility with
 other hardware. The complete boundary is recorded in the
-[versioned validation record](https://github.com/paolo-de-marinis/omen-acpi/blob/v2.1.11/docs/validation.md).
+current [`docs/validation.md`](docs/validation.md) record; the v2.1.11 tag
+retains the corresponding release record.
 
 ## Operational scope
 
@@ -127,7 +154,8 @@ The normalized transformations and structural checks are documented in
 
 ## Requirements
 
-- The exact reference model, DMI identity, board and BIOS listed above.
+- The validated reference identity, or an explicitly opted-in readable DMI
+  identity whose local stock DSDT passes every exact v2.1.11 structural check.
 - Hybrid firmware graphics mode and the NVIDIA GPU at `0000:01:00.0`.
 - A kernel with `CONFIG_ACPI_TABLE_UPGRADE=y`.
 - Secure Boot disabled; the toolkit signs nothing and cannot work around it.
@@ -146,6 +174,11 @@ AUR helper.
 
 Use only the three published v2.1.11 assets. If these URLs return 404, the
 Release is not available; do not install from a source snapshot.
+
+Those published assets do not contain the unreleased v2.2.0 opt-in. This
+working tree still requires independent review. Because the reference path is
+byte-for-byte equivalent, new real-hardware validation on the reference machine
+is not required. No non-reference hardware has been physically validated.
 
 ```bash
 curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.11/omen-acpi-toolkit-v2.1.11.tar.gz
@@ -210,8 +243,7 @@ Keep the laptop on a hard surface and check that it cools completely. Do not
 make an experimental entry the default.
 
 The full command reference, dashboard modes, dependency handling, lifecycle,
-private artifacts and troubleshooting are in the
-[v2.1.11 usage guide](https://github.com/paolo-de-marinis/omen-acpi/blob/v2.1.11/docs/usage.md).
+private artifacts and troubleshooting are in [`docs/usage.md`](docs/usage.md).
 
 ## Boot entries
 
@@ -282,7 +314,7 @@ insufficient: **external manual recovery media is required**.
 Do not remove the snapshot until one unambiguous normal stock entry and all of
 its payloads pass validation. The complete state model, manifest, transaction,
 rollback, race and legacy rules are in the
-[v2.1.11 recovery guide](https://github.com/paolo-de-marinis/omen-acpi/blob/v2.1.11/docs/recovery.md).
+[`docs/recovery.md`](docs/recovery.md).
 
 ## Returning to stock
 
@@ -362,11 +394,12 @@ firmware, kernel or bootloader mismatch can cause boot failure, data loss,
 system instability, abnormal thermal behaviour, powered-off battery drain or
 the need for manual recovery. An incorrect DSDT can prevent Linux from booting.
 
-- Use it exclusively on HP OMEN MAX 16-ap0006sl with DMI
-  `OMEN Gaming Laptop 16-ap0xxx`, board `8E35` and BIOS `F.13`.
+- Only HP OMEN MAX 16-ap0006sl with DMI `OMEN Gaming Laptop 16-ap0xxx`,
+  board `8E35` and BIOS `F.13` has been validated.
 - A shared DMI family name is not evidence that another SKU is compatible.
-- Version 2.1.11 has no experimental hardware opt-in. Other hardware is
-  unvalidated and unsupported.
+- The v2.2.0 opt-in authorizes one attempt; it is not compatibility or support.
+- Opted-in machines remain subject to every v2.1.11 structural precondition,
+  and many will be intentionally rejected.
 - Secure Boot must remain disabled; the toolkit signs nothing.
 - Always retain a working normal stock entry and know how to select it.
 - Never make an experimental entry the default before repeated successful
@@ -406,10 +439,10 @@ independent assurance, and no formal security audit is claimed.
 
 ## Documentation
 
-- [Usage guide](https://github.com/paolo-de-marinis/omen-acpi/blob/v2.1.11/docs/usage.md): complete CLI reference, lifecycle, dependencies, artifacts and troubleshooting.
-- [Recovery guide](https://github.com/paolo-de-marinis/omen-acpi/blob/v2.1.11/docs/recovery.md): snapshot formats, states, transactions, rollback and recovery limits.
-- [Technical references](https://github.com/paolo-de-marinis/omen-acpi/blob/v2.1.11/docs/references.md): standards, reports, prior art and project-specific analysis.
-- [Validation record](https://github.com/paolo-de-marinis/omen-acpi/blob/v2.1.11/docs/validation.md): current real-hardware, automated and synthetic-only scope.
+- [`docs/usage.md`](docs/usage.md): complete CLI reference, lifecycle, dependencies, artifacts and troubleshooting.
+- [`docs/recovery.md`](docs/recovery.md): snapshot formats, states, transactions, rollback and recovery limits.
+- [`docs/references.md`](docs/references.md): standards, reports, prior art and project-specific analysis.
+- [`docs/validation.md`](docs/validation.md): current real-hardware, automated and synthetic-only scope.
 
 These files are repository documentation and are not included in the release
 archive. The README itself contains the complete safety-critical installation,

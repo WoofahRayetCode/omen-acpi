@@ -7,10 +7,10 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-# Manage separate S5-only and combined Limine entries for the exact reference
-# machine. The normal CachyOS entry is never replaced.
+# Manage separate S5-only and combined Limine entries for the reference or an
+# explicitly opted-in machine. The normal CachyOS entry is never replaced.
 
-readonly VERSION="2.1.11"
+readonly VERSION="2.2.0"
 readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
 readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -45,6 +45,10 @@ BUILT_AML=""
 ORIGINAL_DSDT_SHA256=""
 LEGACY_BACKUP=""
 MANAGED_RECOVERY=""
+MACHINE_PRODUCT=""
+MACHINE_BOARD=""
+MACHINE_BIOS=""
+PACKAGE_FORMAT=""
 
 # EXIT traps run after action-local variables have left scope.  Keep cleanup
 # state global so a fail-closed exit can remove staging safely without tripping
@@ -187,18 +191,32 @@ acquire_lock() {
     flock -x 9 || die "Could not acquire the installation lock: $LOCK_FILE"
 }
 
-check_machine() {
-    local product board bios
-    product="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
-    board="$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)"
-    bios="$(cat /sys/class/dmi/id/bios_version 2>/dev/null || true)"
+read_machine() {
+    MACHINE_PRODUCT="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+    MACHINE_BOARD="$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)"
+    MACHINE_BIOS="$(cat /sys/class/dmi/id/bios_version 2>/dev/null || true)"
+    [[ -n "$MACHINE_PRODUCT" && -n "$MACHINE_BOARD" && -n "$MACHINE_BIOS" ]] \
+        || die "DMI identity is missing, empty or unreadable"
+    [[ "$MACHINE_PRODUCT$MACHINE_BOARD$MACHINE_BIOS" != *$'\n'* \
+        && "$MACHINE_PRODUCT$MACHINE_BOARD$MACHINE_BIOS" != *$'\r'* ]] \
+        || die "DMI identity contains an invalid line break"
+}
 
-    [[ "$product" == "$EXPECTED_PRODUCT" ]] \
-        || die "Unsupported DMI product: '$product'"
-    [[ "$board" == "$EXPECTED_BOARD" ]] \
-        || die "Unsupported mainboard: '$board'"
-    [[ "$bios" == "$EXPECTED_BIOS" ]] \
-        || die "Unsupported BIOS: '$bios'"
+machine_is_reference() {
+    [[ "$MACHINE_PRODUCT" == "$EXPECTED_PRODUCT" \
+        && "$MACHINE_BOARD" == "$EXPECTED_BOARD" \
+        && "$MACHINE_BIOS" == "$EXPECTED_BIOS" ]]
+}
+
+check_machine() {
+    read_machine
+    if machine_is_reference; then
+        PACKAGE_FORMAT=2
+    else
+        [[ "${OMEN_ACPI_UNVALIDATED_OPT_IN:-}" == "1" ]] \
+            || die "Unvalidated machine requires the internal CLI opt-in indicator"
+        PACKAGE_FORMAT=3
+    fi
 }
 
 check_hybrid_graphics() {
@@ -398,7 +416,10 @@ safe_copy_source_dsl() {
         "$destination" \
         "$fingerprint_destination" \
         "$VARIANT" \
-        "$EXPECTED_PATCHED_REVISION" <<'PY'
+        "$EXPECTED_PATCHED_REVISION" \
+        "$MACHINE_PRODUCT" \
+        "$MACHINE_BOARD" \
+        "$MACHINE_BIOS" <<'PY'
 from pathlib import Path, PurePosixPath
 import os
 import re
@@ -411,6 +432,8 @@ destination = Path(sys.argv[2])
 fingerprint_destination = Path(sys.argv[3])
 expected_variant = sys.argv[4]
 expected_revision = sys.argv[5]
+machine = tuple(sys.argv[6:9])
+reference = ("OMEN Gaming Laptop 16-ap0xxx", "8E35", "F.13")
 maximum_size = 32 * 1024 * 1024
 
 with tarfile.open(archive, mode="r:*") as tf:
@@ -466,12 +489,12 @@ with tarfile.open(archive, mode="r:*") as tf:
             raise SystemExit(f"duplicate BUILD-INFO.txt key: {key}")
         metadata[key] = value
     expected_metadata = {
-        "PACKAGE_FORMAT": "2",
+        "PACKAGE_FORMAT": "2" if machine == reference else "3",
         "VARIANT": expected_variant,
         "WQBZ_WORKAROUND": "YES" if expected_variant == "combined" else "NO",
-        "DMI_PRODUCT": "OMEN Gaming Laptop 16-ap0xxx",
-        "MAINBOARD": "8E35",
-        "BIOS": "F.13",
+        "DMI_PRODUCT": machine[0],
+        "MAINBOARD": machine[1],
+        "BIOS": machine[2],
         "ORIGINAL_DSDT_OEM_REVISION": "0x01072009",
         "PATCHED_DSDT_OEM_REVISION": expected_revision,
     }
@@ -1709,8 +1732,22 @@ validate_legacy_installation() {
         || die "Could not stage the legacy command line."
 }
 
+state_machine() {
+    local -a values=()
+    [[ -f "$STATE_DIR/machine.txt" && ! -L "$STATE_DIR/machine.txt" \
+        && -f "$STATE_DIR/machine.sha256" && ! -L "$STATE_DIR/machine.sha256" ]] \
+        || return 1
+    [[ "$(sha256_file "$STATE_DIR/machine.txt")" == "$(<"$STATE_DIR/machine.sha256")" ]] \
+        || return 1
+    mapfile -t values < "$STATE_DIR/machine.txt"
+    ((${#values[@]} == 3)) \
+        && [[ -n "${values[0]}" && -n "${values[1]}" && -n "${values[2]}" ]] \
+        || return 1
+    printf '%s\t%s\t%s\n' "${values[0]}" "${values[1]}" "${values[2]}"
+}
+
 managed_state_valid() {
-    local stored_hash actual_hash
+    local stored_hash actual_hash manager_version=''
     [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
     for file in variant.txt expected-revision.txt DSDT.aml DSDT.sha256; do
         [[ -f "$STATE_DIR/$file" && ! -L "$STATE_DIR/$file" ]] || return 1
@@ -1721,7 +1758,15 @@ managed_state_valid() {
     stored_hash="$(tr -d '[:space:]' < "$STATE_DIR/DSDT.sha256")"
     [[ "$stored_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
     actual_hash="$(sha256_file "$STATE_DIR/DSDT.aml")"
-    [[ "$actual_hash" == "$stored_hash" ]]
+    [[ "$actual_hash" == "$stored_hash" ]] || return 1
+    if [[ -f "$STATE_DIR/manager-version.txt" && ! -L "$STATE_DIR/manager-version.txt" ]]; then
+        manager_version="$(<"$STATE_DIR/manager-version.txt")"
+    fi
+    if [[ "$manager_version" == "2.2.0" \
+        || -e "$STATE_DIR/machine.txt" || -L "$STATE_DIR/machine.txt" \
+        || -e "$STATE_DIR/machine.sha256" || -L "$STATE_DIR/machine.sha256" ]]; then
+        state_machine >/dev/null
+    fi
 }
 
 verify_owned_dropin() {
@@ -1734,6 +1779,7 @@ verify_owned_dropin() {
 }
 
 verify_state_identity() {
+    local manager_version=''
     safe_root_regular_file "$STATE_DIR/variant.txt" \
         || die "Managed state does not identify its variant."
     [[ "$(<"$STATE_DIR/variant.txt")" == "$VARIANT" ]] \
@@ -1742,6 +1788,15 @@ verify_state_identity() {
         || die "Managed state does not contain its expected OEM revision."
     [[ "$(<"$STATE_DIR/expected-revision.txt")" == "$EXPECTED_PATCHED_REVISION" ]] \
         || die "Managed state OEM revision does not match variant '$VARIANT'."
+    if [[ -f "$STATE_DIR/manager-version.txt" && ! -L "$STATE_DIR/manager-version.txt" ]]; then
+        manager_version="$(<"$STATE_DIR/manager-version.txt")"
+    fi
+    if [[ "$manager_version" == "2.2.0" \
+        || -e "$STATE_DIR/machine.txt" || -L "$STATE_DIR/machine.txt" \
+        || -e "$STATE_DIR/machine.sha256" || -L "$STATE_DIR/machine.sha256" ]]; then
+        state_machine >/dev/null \
+            || die "Managed state machine identity is missing or modified."
+    fi
     # Older pre-release state directories did not retain this provenance file;
     # keep status/removal available for them.  New installs always create it.
     if [[ -e "$STATE_DIR/original-dsdt.sha256" \
@@ -1830,6 +1885,9 @@ prepare_candidate_state() {
     printf '%s\n' "$NORMAL_TITLE" > "$candidate/source-entry.txt"
     printf '%s\n' "$EXPECTED_PATCHED_REVISION" > "$candidate/expected-revision.txt"
     printf '%s\n' "$ORIGINAL_DSDT_SHA256" > "$candidate/original-dsdt.sha256"
+    printf '%s\n%s\n%s\n' "$MACHINE_PRODUCT" "$MACHINE_BOARD" "$MACHINE_BIOS" \
+        > "$candidate/machine.txt"
+    sha256_file "$candidate/machine.txt" > "$candidate/machine.sha256"
     printf '%s\n' "$(date --iso-8601=seconds)" > "$candidate/created-at.txt"
     sha256_file "$candidate/source-build.tar.gz" > "$candidate/source-build.sha256"
     sha256_file "$candidate/DSDT.aml" > "$candidate/DSDT.sha256"
@@ -1847,13 +1905,19 @@ install_dropin() {
 }
 
 add_test_entry() {
-    local candidate="$1"
+    local candidate="$1" comment
+
+    if [[ "$PACKAGE_FORMAT" == "2" ]]; then
+        comment="EXPERIMENTAL: HP OMEN F.13 ${VARIANT} DSDT; normal entry unchanged"
+    else
+        comment="EXPERIMENTAL: unvalidated opt-in ${VARIANT} DSDT; normal entry unchanged"
+    fi
 
     limine-entry-tool --add-kernel \
         "$ENTRY_NAME" \
         "$candidate/initramfs.img" \
         "$candidate/kernel.img" \
-        --comment "EXPERIMENTAL: HP OMEN F.13 ${VARIANT} DSDT; normal entry unchanged" \
+        --comment "$comment" \
         --quiet
 }
 
@@ -1956,6 +2020,7 @@ install_action() {
     local archive esp config work candidate config_hash
 
     archive="$(absolute_existing_file "$supplied_archive")"
+    check_machine
     require_root install "$VARIANT" "$archive"
 
     for command in \
@@ -2196,7 +2261,7 @@ PY
 status_action() {
     local esp config work current_assets stale=0 wmi_errors revision_hex kernel_messages
     local managed_dsdt_hash='' managed_dsdt_path=''
-    local active_matches_managed=0
+    local active_matches_managed=0 stored_machine current_machine
 
     require_root status "$VARIANT"
     for command in \
@@ -2206,8 +2271,13 @@ status_action() {
     done
 
     acquire_lock
-    check_machine
-    check_hybrid_graphics
+    read_machine
+    if machine_is_reference; then
+        check_hybrid_graphics
+        log "Machine: validated reference"
+    else
+        log "Machine: UNVALIDATED"
+    fi
 
     log "Manager version: $VERSION"
     log "Variant: $VARIANT"
@@ -2239,6 +2309,20 @@ status_action() {
     fi
 
     verify_state_identity
+    current_machine="$MACHINE_PRODUCT"$'\t'"$MACHINE_BOARD"$'\t'"$MACHINE_BIOS"
+    if stored_machine="$(state_machine 2>/dev/null)"; then
+        if [[ "$stored_machine" == "$current_machine" ]]; then
+            log "Stored machine identity: current"
+        else
+            log "Stored machine identity: DIFFERENT MACHINE OR BIOS"
+            stale=1
+        fi
+    elif machine_is_reference; then
+        log "Stored machine identity: historical reference format"
+    else
+        log "Stored machine identity: HISTORICAL REFERENCE FORMAT IS NOT USABLE HERE"
+        stale=1
+    fi
 
     esp="$(find_esp)"
     config="$esp/limine.conf"

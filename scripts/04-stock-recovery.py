@@ -26,9 +26,9 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "2.1.11"
-OWNED_SNAPSHOT_VERSIONS = {"2.1.10", "2.1.11"}
-TRUSTED_SNAPSHOT_VERSIONS = {"2.1.11"}
+VERSION = "2.2.0"
+OWNED_SNAPSHOT_VERSIONS = {"2.1.10", "2.1.11", "2.2.0"}
+TRUSTED_SNAPSHOT_VERSIONS = {"2.1.11", "2.2.0"}
 SCHEMA = 1
 ENTRY = "zz-omen-acpi-stock-recovery"
 BEGIN = "# BEGIN OMEN-ACPI OWNED STOCK RECOVERY v1"
@@ -154,15 +154,22 @@ def acquire_lock():
     return stream
 
 
-def machine() -> tuple[str, str, str]:
+def read_machine() -> tuple[str, str, str]:
     values = []
     for name in ("product_name", "board_name", "bios_version"):
         path = rooted(f"/sys/class/dmi/id/{name}")
         values.append(path.read_text(encoding="utf-8").strip())
     result = tuple(values)
-    if result != EXPECTED:
-        raise Failure(f"unsupported machine: product={result[0]!r}, board={result[1]!r}, BIOS={result[2]!r}")
+    if len(result) != 3 or not all(result) or any("\n" in value or "\r" in value for value in result):
+        raise Failure("DMI identity is missing, empty or unreadable")
     return result  # type: ignore[return-value]
+
+
+def machine() -> tuple[str, str, str]:
+    result = read_machine()
+    if result != EXPECTED and os.environ.get("OMEN_ACPI_UNVALIDATED_OPT_IN") != "1":
+        raise Failure(f"unsupported machine: product={result[0]!r}, board={result[1]!r}, BIOS={result[2]!r}")
+    return result
 
 
 def esp_path() -> Path:
@@ -536,7 +543,8 @@ def cleanup_owned_file(path: Path, identity: tuple | None, point: str | None = N
 
 
 def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = None,
-                        payload_path: Path | None = None) -> dict:
+                        payload_path: Path | None = None,
+                        require_current_machine: bool = True) -> dict:
     """Verify managed ownership, schema and integrity, but not boot trust."""
     state = state_path if state_path is not None else STATE()
     secure_dir(state)
@@ -555,7 +563,14 @@ def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = No
             or data["toolkit_version"] not in OWNED_SNAPSHOT_VERSIONS
             or data["stock_boot_verified"] is not True):
         raise Failure("recovery manifest schema or provenance is invalid")
-    if tuple(data["machine"][key] for key in ("product", "board", "bios")) != EXPECTED:
+    if not isinstance(data["machine"], dict) or set(data["machine"]) != {"product", "board", "bios"}:
+        raise Failure("recovery snapshot machine identity is invalid")
+    snapshot_machine = tuple(data["machine"][key] for key in ("product", "board", "bios"))
+    if not all(isinstance(value, str) and value for value in snapshot_machine):
+        raise Failure("recovery snapshot machine identity is invalid")
+    if data["toolkit_version"] in {"2.1.10", "2.1.11"} and snapshot_machine != EXPECTED:
+        raise Failure("recovery snapshot belongs to a different machine or BIOS")
+    if require_current_machine and snapshot_machine != read_machine():
         raise Failure("recovery snapshot belongs to a different machine or BIOS")
     canonical_payload, canonical = limine_local(
         data["payload_root"], esp if esp is not None else esp_path()
@@ -582,11 +597,15 @@ def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = No
 
 
 def load_owned_snapshot_record(esp: Path, *, state_path: Path | None = None,
-                               payload_path: Path | None = None) -> tuple[dict, tuple]:
+                               payload_path: Path | None = None,
+                               require_current_machine: bool = True) -> tuple[dict, tuple]:
     """Load twice and bind an owned snapshot to exact directory/file identities."""
     state = state_path if state_path is not None else STATE()
     payload = payload_path if payload_path is not None else esp / "omen-acpi-stock-recovery"
-    first = load_owned_snapshot(esp, state_path=state, payload_path=payload)
+    first = load_owned_snapshot(
+        esp, state_path=state, payload_path=payload,
+        require_current_machine=require_current_machine
+    )
 
     def fingerprint(data: dict) -> tuple:
         components = [("manifest.json", *stable_fingerprint(state / "manifest.json"))]
@@ -596,7 +615,10 @@ def load_owned_snapshot_record(esp: Path, *, state_path: Path | None = None,
                 tuple(components))
 
     first_fingerprint = fingerprint(first)
-    second = load_owned_snapshot(esp, state_path=state, payload_path=payload)
+    second = load_owned_snapshot(
+        esp, state_path=state, payload_path=payload,
+        require_current_machine=require_current_machine
+    )
     second_fingerprint = fingerprint(second)
     if first["snapshot_id"] != second["snapshot_id"] or first_fingerprint != second_fingerprint:
         raise Failure("recovery snapshot changed while ownership was verified")
@@ -624,7 +646,7 @@ def load_trusted_snapshot_record(esp: Path) -> tuple[dict, tuple]:
     return data, fingerprint
 
 
-def existing_owned_snapshot(esp: Path) -> dict | None:
+def existing_owned_snapshot(esp: Path, *, require_current_machine: bool = True) -> dict | None:
     """Require the reserved payload/state paths to be absent or a verified pair."""
     payload = esp / "omen-acpi-stock-recovery"
     state = STATE()
@@ -636,19 +658,23 @@ def existing_owned_snapshot(esp: Path) -> dict | None:
         raise Failure(
             "recovery payload and manifest state are incomplete; manual inspection is required"
         )
-    return load_owned_snapshot(esp)
+    return load_owned_snapshot(esp, require_current_machine=require_current_machine)
 
 
-def existing_owned_snapshot_record(esp: Path) -> tuple[dict, tuple] | None:
+def existing_owned_snapshot_record(esp: Path, *,
+                                   require_current_machine: bool = True) -> tuple[dict, tuple] | None:
     """Return the exact verified pair, or require both reserved paths absent."""
-    existing = existing_owned_snapshot(esp)
+    existing = existing_owned_snapshot(esp, require_current_machine=require_current_machine)
     if existing is None:
         return None
-    return load_owned_snapshot_record(esp)
+    return load_owned_snapshot_record(esp, require_current_machine=require_current_machine)
 
 
-def require_same_owned_snapshot(esp: Path, initial: tuple[dict, tuple] | None) -> None:
-    current = existing_owned_snapshot_record(esp)
+def require_same_owned_snapshot(esp: Path, initial: tuple[dict, tuple] | None, *,
+                                require_current_machine: bool = True) -> None:
+    current = existing_owned_snapshot_record(
+        esp, require_current_machine=require_current_machine
+    )
     if initial is None:
         if current is not None:
             raise Failure("recovery state appeared during snapshot staging")
@@ -794,7 +820,7 @@ def owned_block(data: dict) -> str:
 
 
 def recover() -> None:
-    machine(); esp = esp_path(); config = esp / "limine.conf"
+    read_machine(); esp = esp_path(); config = esp / "limine.conf"
     original_bytes = config.read_bytes(); before_identity = file_identity(config, original_bytes)
     text = original_bytes.decode("utf-8", errors="strict")
     normal = normal_entry(text, required=False)
@@ -900,7 +926,7 @@ def remove() -> None:
             "recovery removal requires one valid normal linux-cachyos entry; "
             "restore a verifiable stock entry before removing the snapshot"
         ) from error
-    initial_snapshot = existing_owned_snapshot_record(esp)
+    initial_snapshot = existing_owned_snapshot_record(esp, require_current_machine=False)
     if initial_snapshot is None:
         raise Failure("managed recovery snapshot is missing")
     data = initial_snapshot[0]
@@ -934,7 +960,7 @@ def remove() -> None:
         # Full source -> full snapshot -> full source prevents either expensive
         # verifier from opening a new unchecked boundary before the replace.
         require_same_normal_source(text, esp, source_data)
-        require_same_owned_snapshot(esp, initial_snapshot)
+        require_same_owned_snapshot(esp, initial_snapshot, require_current_machine=False)
         require_same_normal_source(text, esp, source_data)
         if file_identity(stage, installed_bytes) != stage_identity:
             raise Failure("removal configuration staging changed before commit")
@@ -945,7 +971,7 @@ def remove() -> None:
         os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
         stage_identity = None
         installed_identity = file_identity(config, installed_bytes)
-        require_same_owned_snapshot(esp, initial_snapshot)
+        require_same_owned_snapshot(esp, initial_snapshot, require_current_machine=False)
         require_same_normal_source(new_text, esp, source_data)
         if file_identity(config, installed_bytes) != installed_identity:
             raise Failure("Limine configuration changed after removal verification")
@@ -956,7 +982,8 @@ def remove() -> None:
         rename_noreplace(payload, detached_payload)
         rename_noreplace(STATE(), detached_state)
         detached_snapshot = load_owned_snapshot_record(
-            esp, state_path=detached_state, payload_path=detached_payload
+            esp, state_path=detached_state, payload_path=detached_payload,
+            require_current_machine=False
         )
         if detached_snapshot[0]["snapshot_id"] != data["snapshot_id"] \
                 or detached_snapshot[1][0] != initial_snapshot[1][0] \
@@ -984,7 +1011,8 @@ def remove() -> None:
         cleanup_safe = True
         try:
             cleanup_snapshot = load_owned_snapshot_record(
-                esp, state_path=detached_state, payload_path=detached_payload
+                esp, state_path=detached_state, payload_path=detached_payload,
+                require_current_machine=False
             )
             if cleanup_snapshot[0]["snapshot_id"] != data["snapshot_id"] \
                     or cleanup_snapshot[1][3] != detached_snapshot[1][3]:
@@ -1056,7 +1084,7 @@ def status() -> None:
     normal = None
     text = ""
     try:
-        machine()
+        read_machine()
         esp = esp_path()
         text = (esp / "limine.conf").read_text(encoding="utf-8", errors="strict")
         try:
@@ -1085,7 +1113,7 @@ def status() -> None:
         else:
             try:
                 data = load_owned_snapshot(esp)
-                if data["toolkit_version"] == VERSION:
+                if data["toolkit_version"] in TRUSTED_SNAPSHOT_VERSIONS:
                     snapshot_state = "valid"
                 else:
                     snapshot_state = "refresh-required"
@@ -1106,7 +1134,7 @@ def status() -> None:
         else:
             if text.count(owned_block(data)) != 1:
                 recovery_state = "modified"
-            elif data["toolkit_version"] == VERSION:
+            elif data["toolkit_version"] in TRUSTED_SNAPSHOT_VERSIONS:
                 recovery_state = "available"
             else:
                 recovery_state = "legacy-untrusted"
@@ -1168,6 +1196,8 @@ def main() -> int:
     if arguments.action == "status":
         status()
         return 0
+    if arguments.action == "prepare":
+        machine()
     lock = acquire_lock()
     try:
         globals()[arguments.action]()

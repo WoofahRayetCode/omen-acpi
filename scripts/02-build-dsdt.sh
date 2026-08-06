@@ -23,6 +23,10 @@ EXPECTED_BOARD="8E35"
 EXPECTED_BIOS="F.13"
 ORIGINAL_OEM_REVISION="0x01072009"
 ORIGINAL_DSDT_SHA256=""
+MACHINE_PRODUCT=""
+MACHINE_BOARD=""
+MACHINE_BIOS=""
+PACKAGE_FORMAT=""
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -40,22 +44,28 @@ usage() {
     printf '  s5        Build only the tested S5 power-off patch (OEM revision 0x0107200A).\n'
     printf '  combined  Build the S5 patch plus the WQBZ bounds fix (OEM revision 0x0107200B).\n'
     printf '\n'
-    printf 'SOURCE_ARCHIVE must be an omen-ap0006sl-acpi-source-*.tar.gz archive.\n'
+    printf 'SOURCE_ARCHIVE must be an archive created by 01-collect-acpi.sh.\n'
 }
 
 check_machine() {
-    local product board bios
+    MACHINE_PRODUCT="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+    MACHINE_BOARD="$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)"
+    MACHINE_BIOS="$(cat /sys/class/dmi/id/bios_version 2>/dev/null || true)"
+    [[ -n "$MACHINE_PRODUCT" && -n "$MACHINE_BOARD" && -n "$MACHINE_BIOS" ]] \
+        || die "DMI identity is missing, empty or unreadable"
+    [[ "$MACHINE_PRODUCT$MACHINE_BOARD$MACHINE_BIOS" != *$'\n'* \
+        && "$MACHINE_PRODUCT$MACHINE_BOARD$MACHINE_BIOS" != *$'\r'* ]] \
+        || die "DMI identity contains an invalid line break"
 
-    product="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
-    board="$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)"
-    bios="$(cat /sys/class/dmi/id/bios_version 2>/dev/null || true)"
-
-    [[ "$product" == "$EXPECTED_PRODUCT" ]] \
-        || die "Unexpected DMI product: '$product'"
-    [[ "$board" == "$EXPECTED_BOARD" ]] \
-        || die "Unexpected mainboard: '$board'"
-    [[ "$bios" == "$EXPECTED_BIOS" ]] \
-        || die "Unexpected BIOS: '$bios'"
+    if [[ "$MACHINE_PRODUCT" == "$EXPECTED_PRODUCT" \
+        && "$MACHINE_BOARD" == "$EXPECTED_BOARD" \
+        && "$MACHINE_BIOS" == "$EXPECTED_BIOS" ]]; then
+        PACKAGE_FORMAT=2
+    else
+        [[ "${OMEN_ACPI_UNVALIDATED_OPT_IN:-}" == "1" ]] \
+            || die "Unvalidated machine requires the internal CLI opt-in indicator"
+        PACKAGE_FORMAT=3
+    fi
 }
 
 safe_extract() {
@@ -144,12 +154,14 @@ PY
 read_source_fingerprint() {
     local source_info="$1"
 
-    python3 - "$source_info" <<'PY'
+    python3 - "$source_info" "$MACHINE_PRODUCT" "$MACHINE_BOARD" "$MACHINE_BIOS" <<'PY'
 from pathlib import Path
 import re
 import sys
 
 path = Path(sys.argv[1])
+machine = tuple(sys.argv[2:5])
+reference = ("OMEN Gaming Laptop 16-ap0xxx", "8E35", "F.13")
 metadata = {}
 for line_number, line in enumerate(
     path.read_text(encoding="utf-8", errors="strict").splitlines(), 1
@@ -162,10 +174,10 @@ for line_number, line in enumerate(
     metadata[key] = value
 
 expected = {
-    "PACKAGE_FORMAT": "2",
-    "DMI_PRODUCT": "OMEN Gaming Laptop 16-ap0xxx",
-    "MAINBOARD": "8E35",
-    "BIOS": "F.13",
+    "PACKAGE_FORMAT": "2" if machine == reference else "3",
+    "DMI_PRODUCT": machine[0],
+    "MAINBOARD": machine[1],
+    "BIOS": machine[2],
     "ORIGINAL_DSDT_OEM_REVISION": "0x01072009",
 }
 expected_keys = set(expected) | {"ORIGINAL_DSDT_SHA256"}
@@ -434,7 +446,11 @@ trap cleanup EXIT
 extract_dir="$work/extracted"
 build_dir="$work/build"
 package_root="$work/package"
-package_name="omen-dsdt-f13-${variant}-build-$stamp"
+if [[ "$PACKAGE_FORMAT" == "2" ]]; then
+    package_name="omen-dsdt-f13-${variant}-build-$stamp"
+else
+    package_name="omen-dsdt-unvalidated-${variant}-build-$stamp"
+fi
 package_dir="$package_root/$package_name"
 output_dir="${OMEN_ACPI_OUTPUT_DIR:-${HOME:?HOME is not set}}"
 [[ -d "$output_dir" ]] || die "Output directory does not exist: $output_dir"
@@ -723,13 +739,13 @@ install -m 0600 "$build_dir/compile.log" "$package_dir/compile.log"
 install -m 0600 "$roundtrip_dsl" "$package_dir/DSDT-roundtrip.dsl"
 
 {
-    printf 'PACKAGE_FORMAT=2\n'
+    printf 'PACKAGE_FORMAT=%s\n' "$PACKAGE_FORMAT"
     printf 'VARIANT=%s\n' "$variant"
     printf 'PATCH=%s\n' "$PATCH_ID"
     printf 'WQBZ_WORKAROUND=%s\n' "$WQBZ_WORKAROUND"
-    printf 'DMI_PRODUCT=%s\n' "$EXPECTED_PRODUCT"
-    printf 'MAINBOARD=%s\n' "$EXPECTED_BOARD"
-    printf 'BIOS=%s\n' "$EXPECTED_BIOS"
+    printf 'DMI_PRODUCT=%s\n' "$MACHINE_PRODUCT"
+    printf 'MAINBOARD=%s\n' "$MACHINE_BOARD"
+    printf 'BIOS=%s\n' "$MACHINE_BIOS"
     printf 'ORIGINAL_DSDT_OEM_REVISION=%s\n' "$ORIGINAL_OEM_REVISION"
     printf 'ORIGINAL_DSDT_SHA256=%s\n' "$ORIGINAL_DSDT_SHA256"
     printf 'PATCHED_DSDT_OEM_REVISION=%s\n' "$PATCHED_OEM_REVISION"

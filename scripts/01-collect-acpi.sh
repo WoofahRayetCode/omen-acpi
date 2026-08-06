@@ -13,6 +13,10 @@ export PATH="/usr/bin:/bin"
 EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 EXPECTED_BOARD="8E35"
 EXPECTED_BIOS="F.13"
+MACHINE_PRODUCT=""
+MACHINE_BOARD=""
+MACHINE_BIOS=""
+PACKAGE_FORMAT=""
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 boot_probe="$script_dir/00-probe-boot.sh"
@@ -28,22 +32,28 @@ need_cmd() {
 
 usage() {
     printf 'Usage: %s\n' "$0"
-    printf 'Extract the local DSDT source for the HP OMEN 16-ap0xxx / 8E35 / BIOS F.13 reproduction.\n'
+    printf 'Extract the local DSDT source for the OMEN ACPI reproduction.\n'
 }
 
 check_machine() {
-    local product board bios
+    MACHINE_PRODUCT="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+    MACHINE_BOARD="$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)"
+    MACHINE_BIOS="$(cat /sys/class/dmi/id/bios_version 2>/dev/null || true)"
+    [[ -n "$MACHINE_PRODUCT" && -n "$MACHINE_BOARD" && -n "$MACHINE_BIOS" ]] \
+        || die "DMI identity is missing, empty or unreadable"
+    [[ "$MACHINE_PRODUCT$MACHINE_BOARD$MACHINE_BIOS" != *$'\n'* \
+        && "$MACHINE_PRODUCT$MACHINE_BOARD$MACHINE_BIOS" != *$'\r'* ]] \
+        || die "DMI identity contains an invalid line break"
 
-    product="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
-    board="$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)"
-    bios="$(cat /sys/class/dmi/id/bios_version 2>/dev/null || true)"
-
-    [[ "$product" == "$EXPECTED_PRODUCT" ]] \
-        || die "Unexpected DMI product: '$product'"
-    [[ "$board" == "$EXPECTED_BOARD" ]] \
-        || die "Unexpected mainboard: '$board'"
-    [[ "$bios" == "$EXPECTED_BIOS" ]] \
-        || die "Unexpected BIOS: '$bios'"
+    if [[ "$MACHINE_PRODUCT" == "$EXPECTED_PRODUCT" \
+        && "$MACHINE_BOARD" == "$EXPECTED_BOARD" \
+        && "$MACHINE_BIOS" == "$EXPECTED_BIOS" ]]; then
+        PACKAGE_FORMAT=2
+    else
+        [[ "${OMEN_ACPI_UNVALIDATED_OPT_IN:-}" == "1" ]] \
+            || die "Unvalidated machine requires the internal CLI opt-in indicator"
+        PACKAGE_FORMAT=3
+    fi
 }
 
 if (($# > 0)); then
@@ -88,7 +98,11 @@ trap cleanup EXIT
 
 raw_dir="$work/raw"
 package_root="$work/package"
-package_name="omen-ap0006sl-acpi-source-$stamp"
+if [[ "$PACKAGE_FORMAT" == "2" ]]; then
+    package_name="omen-ap0006sl-acpi-source-$stamp"
+else
+    package_name="omen-unvalidated-acpi-source-$stamp"
+fi
 package_dir="$package_root/$package_name"
 output_dir="${OMEN_ACPI_OUTPUT_DIR:-$HOME}"
 [[ -d "$output_dir" ]] || die "Output directory does not exist: $output_dir"
@@ -161,10 +175,10 @@ expected_external='External (_SB_.PCI0.GPP0.PEGP, DeviceObj)'
 install -m 0600 "$source_dsl" "$package_dir/dsdt.dsl"
 
 {
-    printf 'PACKAGE_FORMAT=2\n'
-    printf 'DMI_PRODUCT=%s\n' "$EXPECTED_PRODUCT"
-    printf 'MAINBOARD=%s\n' "$EXPECTED_BOARD"
-    printf 'BIOS=%s\n' "$EXPECTED_BIOS"
+    printf 'PACKAGE_FORMAT=%s\n' "$PACKAGE_FORMAT"
+    printf 'DMI_PRODUCT=%s\n' "$MACHINE_PRODUCT"
+    printf 'MAINBOARD=%s\n' "$MACHINE_BOARD"
+    printf 'BIOS=%s\n' "$MACHINE_BIOS"
     printf 'ORIGINAL_DSDT_OEM_REVISION=0x01072009\n'
     printf 'ORIGINAL_DSDT_SHA256=%s\n' "$original_dsdt_sha"
 } > "$package_dir/SOURCE.txt"

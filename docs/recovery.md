@@ -1,7 +1,7 @@
 # Preventive stock recovery
 
 This document describes the stock-recovery state machine and transaction rules
-implemented by OMEN ACPI Toolkit v2.1.11. The minimum safe workflow and the
+implemented by OMEN ACPI Toolkit v2.2.0 Unreleased. The minimum safe workflow and the
 irreducible recovery limitation remain in the packaged `README.md`.
 
 ## Components and status
@@ -55,9 +55,10 @@ read-only. Contextual recommendations never execute an action automatically.
 
 ## Snapshot preparation
 
-`omen-acpi prepare-stock-recovery` works only during an exactly supported,
-clean and verified stock boot. It selects one unambiguous normal entry, copies
-its kernel and every `module_path` in original order, and creates a manifest.
+`omen-acpi prepare-stock-recovery` works only during a validated or explicitly
+opted-in, clean and verified stock boot. It selects one unambiguous normal
+entry, copies its kernel and every `module_path` in original order, and creates
+a manifest.
 
 The manifest records schema and toolkit versions, creation time, DMI, board,
 BIOS, stock DSDT revision and SHA-256, source title, kernel version, normalized
@@ -68,7 +69,8 @@ are deterministic and never derived from entry titles or command lines.
 Preparation rejects:
 
 - S5, Combined, legacy, unknown or unavailable active boots;
-- unsupported machine identity or BIOS;
+- DMI that is missing, unreadable, changed since the snapshot, or unvalidated
+  without the current process's explicit opt-in;
 - missing, duplicate, ambiguous or unusable normal entries;
 - unsafe, non-canonical or changing paths;
 - symlinks, hard links and unexpected file types;
@@ -93,8 +95,9 @@ directory, regular file, symlink—including a broken symlink—unsafe mode or
 foreign content is `modified`. It is never renamed, repaired, replaced or
 deleted automatically.
 
-Legacy snapshots remain ownership- and integrity-checked but are not trusted
-for boot. They are reported as `refresh-required`. While a valid normal entry
+Version 2.1.11 reference snapshots remain trusted only on the exact reference
+identity. Version 2.1.10 snapshots remain ownership- and integrity-checked but
+are not trusted for boot and are reported as `refresh-required`. While a valid normal entry
 still exists, the legacy pair can be preserved for a normal confirmed reboot,
 refreshed from a subsequent clean stock boot or explicitly removed.
 

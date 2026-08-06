@@ -122,7 +122,7 @@ legacy_output="$(recover_stock 2>&1)"
 contains "$legacy_output" '2.1.10 recovery snapshot is untrusted for boot and will be preserved' \
     "legacy recovery did not explain that the snapshot is preserved"
 contains "$legacy_output" 'choose recovery option 1' \
-    "legacy recovery omitted the post-boot 2.1.11 refresh instruction"
+    "legacy recovery omitted the post-boot 2.2.0 refresh instruction"
 [[ "$(<"$work/legacy-actions")" == $'manager-recover\nstock-reboot-prompt' ]] \
     || fail "legacy recovery did not reach the verified normal-entry reboot prompt"
 

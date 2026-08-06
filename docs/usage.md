@@ -1,8 +1,8 @@
 # Usage guide
 
 This document is the extended operational reference for OMEN ACPI Toolkit
-v2.1.11. Installation, the minimum safe workflow, stock return, recovery limits
-and removal remain directly in the release `README.md`.
+v2.2.0 Unreleased. Installation, the minimum safe workflow, stock return,
+recovery limits and removal remain directly in the release `README.md`.
 
 ## Command reference
 
@@ -40,7 +40,25 @@ Global options may appear before or after a command:
 `NO_COLOR` and `--no-color` suppress colour. `--plain` also suppresses ANSI
 control sequences and Unicode UI characters, which makes output suitable for
 logs and simple parsers. `--yes` accepts routine confirmations; it never
-auto-confirms a reboot, removal, uninstall or full system update.
+auto-confirms a reboot, removal, uninstall, full system update or the
+unvalidated-machine opt-in.
+
+For a DMI identity different from the validated product, board or BIOS, a
+transformation workflow is classified `UNVALIDATED / OPT-IN REQUIRED`. Before
+dependencies, `sudo`, artifact directories, persistent locks or system writes,
+the CLI shows the reference and detected values, risks and responsibility, then
+asks `Proceed on this unvalidated machine? [y/N]`. Only `y` or `yes` authorizes
+that process-local attempt. Non-interactive stdin, empty or unreadable DMI and
+every other answer fail closed. A new invocation or post-reboot resume asks
+again. Status, doctor, removal and managed stock-return/recovery paths do not
+consume or require this opt-in.
+
+Opt-in bypasses only exact DMI equality. Every v2.1.11 ACPI structure, boot,
+GPU, kernel, initramfs, Limine, ownership, transaction and rollback check remains
+mandatory, so many opted-in machines are intentionally rejected. Source and
+build metadata record actual DMI and the local stock DSDT fingerprint; a BIOS or
+machine change invalidates them. Historical v2.1.11 formats remain usable only
+on the reference identity.
 
 Do not run `sudo omen-acpi`. The frontend requests narrowly scoped
 administrator access when an operation needs it. The numbered files under
@@ -55,7 +73,7 @@ The dashboard summarizes machine identity, dependencies, active DSDT, stock
 recovery and both managed variants. A typical clean initial state is:
 
 ```text
-+ OMEN ACPI Toolkit v2.1.11 -----------------------------------------------+
++ OMEN ACPI Toolkit v2.2.0 -----------------------------------------------+
 |                                                                          |
 |  Machine        8E35 / BIOS F.13       READY                             |
 |  Dependencies   All commands available READY                             |
@@ -69,7 +87,7 @@ recovery and both managed variants. A typical clean initial state is:
 
 Guided setup performs these stages in order:
 
-1. verifies the exact machine and BIOS;
+1. accepts the validated identity or obtains the explicit unvalidated opt-in;
 2. finds missing dependencies and can install repository packages with Pacman;
 3. classifies the currently loaded ACPI state;
 4. requires a clean stock boot before collecting firmware source;
