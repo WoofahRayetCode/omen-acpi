@@ -98,7 +98,8 @@ claim.
 The candidate is acceptable only while the complete repository suite, Bash and
 Python syntax checks, NVDE self-test, strict `SHA256SUMS` verification,
 reproducible archive comparison, archive-content audit and non-installing updater
-verification all pass from a clean tree. Version 2.2.0 remains Unreleased and
-still requires independent review. Because the reference path is byte-for-byte
-equivalent, new real-hardware validation on the reference machine is not
-required. No non-reference hardware has been physically validated.
+verification all pass from a clean tree. Version 2.2.0 was audited on its frozen
+commit without a release blocker. Because the reference path is byte-for-byte
+equivalent, new real-hardware validation on the
+reference machine is not required. No non-reference hardware has been physically
+validated.

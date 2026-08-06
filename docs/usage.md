@@ -1,7 +1,7 @@
 # Usage guide
 
 This document is the extended operational reference for OMEN ACPI Toolkit
-v2.2.0 Unreleased. Installation, the minimum safe workflow, stock return,
+v2.2.0. Installation, the minimum safe workflow, stock return,
 recovery limits and removal remain directly in the release `README.md`.
 
 ## Command reference

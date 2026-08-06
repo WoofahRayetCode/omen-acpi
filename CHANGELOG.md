@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.2.0 - Unreleased
+## 2.2.0 - 2026-08-06
 
 - Adds a process-local, explicit opt-in for attempting the unchanged v2.1.11
   transformations on a different but fully readable DMI identity. Only `y` or

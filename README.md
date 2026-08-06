@@ -12,8 +12,8 @@ The toolkit builds a replacement DSDT that extends `_PTS`, installs it in a
 untouched.
 
 > **This is not a generic HP OMEN fix.** Only one exact retail model, board and
-> BIOS revision has been validated. Version 2.2.0 is unreleased and adds only
-> an explicit, unsupported opt-in attempt for other readable DMI identities.
+> BIOS revision has been validated. Version 2.2.0 adds only an explicit,
+> unsupported opt-in attempt for other readable DMI identities.
 > Read [Risks and limits](#risks-and-limits) before using it.
 
 ## Validated reference hardware
@@ -172,20 +172,19 @@ AUR helper.
 
 ## Installation
 
-Use only the three published v2.1.11 assets. If these URLs return 404, the
+Use only the three published v2.2.0 assets. If these URLs return 404, the
 Release is not available; do not install from a source snapshot.
 
-Those published assets do not contain the unreleased v2.2.0 opt-in. This
-working tree still requires independent review. Because the reference path is
-byte-for-byte equivalent, new real-hardware validation on the reference machine
-is not required. No non-reference hardware has been physically validated.
+The reference path is byte-for-byte equivalent to v2.1.11, so new real-hardware
+validation on the reference machine is not required. No non-reference hardware
+has been physically validated.
 
 ```bash
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.11/omen-acpi-toolkit-v2.1.11.tar.gz
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.1.11/omen-acpi-toolkit-v2.1.11.tar.gz.sha256
-sha256sum -c omen-acpi-toolkit-v2.1.11.tar.gz.sha256
-tar xzf omen-acpi-toolkit-v2.1.11.tar.gz
-cd omen-acpi-toolkit-v2.1.11
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.2.0/omen-acpi-toolkit-v2.2.0.tar.gz
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.2.0/omen-acpi-toolkit-v2.2.0.tar.gz.sha256
+sha256sum -c omen-acpi-toolkit-v2.2.0.tar.gz.sha256
+tar xzf omen-acpi-toolkit-v2.2.0.tar.gz
+cd omen-acpi-toolkit-v2.2.0
 sha256sum -c SHA256SUMS
 sudo ./install.sh
 omen-acpi
