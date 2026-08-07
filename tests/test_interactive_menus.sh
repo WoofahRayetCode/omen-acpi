@@ -233,7 +233,9 @@ contains "$refresh_menu" 'Only a current trusted snapshot can recreate a missing
 )
 
 (
+    machine_values() { fail "reference dashboard read host DMI"; }
     machine_supported() { return 0; }
+    machine_readable() { return 0; }
     collect_missing_dependencies() { MISSING_PACKAGES=(); }
     probe_boot_if_cached() {
         PROBE_STATE=stock

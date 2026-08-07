@@ -244,11 +244,44 @@ refine_installation_formats_cached() { :; }
 stock_recovery_status() { printf 'SNAPSHOT\\tmissing\\n'; }
 status_one() { printf 'STATUS_OK\\n'; }
 remove_one() { printf 'REMOVE_OK\\n'; }
+print_missing_dependencies() { return 0; }
+collect_missing_dependencies() { MISSING_PACKAGES=(fixture); }
+secure_boot_state() { printf 'unknown\\n'; }
 status_variants all
 remove_variants all
+doctor
 '''
         result = run_cli_plain(changed[0], read_only, home)
         assert result.returncode == 0 and "STATUS_OK" in result.stdout and "REMOVE_OK" in result.stdout
+        assert "UNVALIDATED / OPT-IN REQUIRED" in result.stderr
+        assert QUESTION not in result.stdout + result.stderr
+
+        reboot = '''
+ensure_dependencies() { :; }
+probe_boot() { PROBE_STATE=s5; PROBE_CLEAN=0; PROBE_REVISION=x; PROBE_REASON=test; }
+get_stock_entry() { printf 'Linux-CachyOS\\n'; }
+confirm_dangerous() { return 1; }
+main reboot-stock
+'''
+        result = run_cli_plain(changed[0], reboot, home)
+        assert result.returncode == 0 and "Linux-CachyOS" in result.stdout
+        assert QUESTION not in result.stdout + result.stderr
+
+        recover = '''
+ensure_dependencies() { :; }
+ensure_admin() { :; }
+probe_boot() { PROBE_STATE=s5; PROBE_CLEAN=0; PROBE_REVISION=x; PROBE_REASON=test; }
+stock_recovery_manager() {
+    case "$1" in
+        status) printf 'SNAPSHOT\\tmissing\\nNORMAL_ENTRY\\tavailable\\n' ;;
+        recover) printf 'NORMAL\\tLinux-CachyOS\\n' ;;
+    esac
+}
+show_stock_reboot_prompt() { printf 'RECOVERY_NORMAL_OK\\n'; }
+main recover-stock
+'''
+        result = run_cli_plain(changed[0], recover, home)
+        assert result.returncode == 0 and "RECOVERY_NORMAL_OK" in result.stdout
         assert QUESTION not in result.stdout + result.stderr
 
 

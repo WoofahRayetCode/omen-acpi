@@ -2624,7 +2624,7 @@ stock_entry_action() {
     done
 
     acquire_lock
-    check_machine
+    read_machine
     esp="$(find_esp)"
     work="$(mktemp -d /var/tmp/omen-acpi-override.XXXXXX)"
     trap 'safe_remove_temp_dir "${work:-}"' EXIT

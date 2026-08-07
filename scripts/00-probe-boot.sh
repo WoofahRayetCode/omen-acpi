@@ -505,10 +505,7 @@ state="unavailable"
 reason="probe-incomplete"
 clean=0
 
-if (( ! machine_ok )); then
-    state="unsupported"
-    reason="machine-mismatch"
-elif (( ! dsdt_readable )); then
+if (( ! dsdt_readable )); then
     state="unavailable"
     reason="live-state-unreadable"
 elif [[ "$boot_marker" == "invalid" ]]; then

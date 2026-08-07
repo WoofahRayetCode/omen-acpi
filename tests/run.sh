@@ -554,8 +554,28 @@ reset_probe_fixture
 make_dsdt 0x01072009
 printf '%s\n' 'ACPI: DSDT 0x0000000000000000 000024 (v02 HPQOEM 8E35)' > "$work/dmesg.log"
 expect_state stock
+expect_probe_value MACHINE_OK 1
+expect_probe_value CLEAN 1
 expect_probe_value LOG_EARLY_ACPI 1
 expect_probe_value LOG_OVERRIDE 0
+
+printf '%s\n' 'Other product' > "$fixture/sys/class/dmi/id/product_name"
+printf '%s\n' 'Other board' > "$fixture/sys/class/dmi/id/board_name"
+printf '%s\n' 'Other BIOS' > "$fixture/sys/class/dmi/id/bios_version"
+expect_state stock
+expect_probe_value MACHINE_OK 0
+expect_probe_value CLEAN 1
+if ! OMEN_ACPI_TESTING=1 \
+    OMEN_ACPI_TEST_ROOT="$fixture" \
+    OMEN_ACPI_TEST_DMESG_FILE="$work/dmesg.log" \
+    "$ROOT/scripts/00-probe-boot.sh" --require-stock \
+    >"$work/non-reference-require-stock.out" \
+    2>"$work/non-reference-require-stock.err"; then
+    fail "probe --require-stock rejected structurally verified non-reference stock"
+fi
+printf '%s\n' 'OMEN Gaming Laptop 16-ap0xxx' > "$fixture/sys/class/dmi/id/product_name"
+printf '%s\n' '8E35' > "$fixture/sys/class/dmi/id/board_name"
+printf '%s\n' 'F.13' > "$fixture/sys/class/dmi/id/bios_version"
 
 reset_probe_fixture
 make_dsdt 0x0107200A
@@ -832,6 +852,45 @@ EOF
         && "${normal_entry[2]}" == 'quiet splash' \
         && "${normal_entry[3]}" == 'boot():/normal-initramfs' ]] \
         || fail "manager selected a snapshot instead of the active normal entry"
+
+    (
+        TEST_PRODUCT='Other product'
+        TEST_BOARD='Other board'
+        TEST_BIOS='Other BIOS'
+        TEST_ESP="$legacy_esp"
+        TEST_STOCK_TMP="$work"
+        unset OMEN_ACPI_UNVALIDATED_OPT_IN
+        require_root() { :; }
+        acquire_lock() { :; }
+        find_esp() { printf '%s\n' "$TEST_ESP"; }
+        lsinitcpio() { printf 'usr/bin/init\n'; }
+        mktemp() { command mktemp -d "$TEST_STOCK_TMP/stock-entry.XXXXXX"; }
+        safe_remove_temp_dir() {
+            case "$1" in
+                "$TEST_STOCK_TMP"/stock-entry.*) rm -rf -- "$1" ;;
+                *) fail "stock-entry test attempted unsafe cleanup: $1" ;;
+            esac
+        }
+        cat() {
+            case "$1" in
+                /sys/class/dmi/id/product_name) printf '%s\n' "$TEST_PRODUCT" ;;
+                /sys/class/dmi/id/board_name) printf '%s\n' "$TEST_BOARD" ;;
+                /sys/class/dmi/id/bios_version) printf '%s\n' "$TEST_BIOS" ;;
+                *) command cat "$@" ;;
+            esac
+        }
+
+        [[ "$(stock_entry_action)" == 'linux-cachyos' ]] \
+            || fail "stock-entry rejected a verified normal entry on non-reference DMI"
+        TEST_BIOS=''
+        if ( stock_entry_action ) >"$work/stock-entry-empty.out" \
+            2>"$work/stock-entry-empty.err"; then
+            fail "stock-entry accepted unreadable DMI"
+        fi
+        grep -Fq 'DMI identity is missing, empty or unreadable' \
+            "$work/stock-entry-empty.err" \
+            || fail "stock-entry did not fail closed on unreadable DMI"
+    )
 
     generated_dropin="$work/generated-managed-dropin.conf"
     write_dropin_file "$generated_dropin" 'quiet splash root=UUID=test-value'
