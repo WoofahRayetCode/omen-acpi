@@ -29,6 +29,8 @@ unvalidated-hardware opt-in without changing the reference transformation.
 | BIOS | `F.13` |
 | Distribution | CachyOS |
 | Kernel | `7.1.5-1-cachyos` |
+| NVIDIA GPU | NVIDIA GeForce RTX 5070 Laptop GPU (`GB206M`, `10de:2d18`) |
+| NVIDIA driver | NVIDIA Open Kernel Module `610.43.03` (`linux-cachyos-nvidia-open 7.1.5-1`, `nvidia-utils 610.43.03-1`) |
 | ESP | `/boot` |
 | Secure Boot | disabled |
 | Normal Limine entry | `linux-cachyos` |
