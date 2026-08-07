@@ -1,6 +1,12 @@
 # Changelog
 
-## 2.2.0 - 2026-08-06
+## Unreleased
+
+- Corrects the documented reference validation environment: CachyOS kernel
+  `7.1.5-1-cachyos`, package `linux-cachyos-nvidia-open 7.1.5-1`, NVIDIA Open
+  Kernel Module `610.43.03`, `nvidia-utils 610.43.03-1`, and RTX 5070 Mobile.
+
+## 2.2.0 - 2026-08-07
 
 - Adds a process-local, explicit opt-in for attempting the unchanged v2.1.11
   transformations on a different but fully readable DMI identity. Only `y` or
