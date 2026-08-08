@@ -75,6 +75,26 @@ class RecoveryTest(unittest.TestCase):
         recovery.prepare()
         return recovery.load_owned_snapshot()
 
+    def add_lts_entry(self, *, keep_standard=True):
+        (self.esp / "vmlinuz-linux-cachyos-lts").write_bytes(b"stock-lts-kernel")
+        (self.esp / "initramfs-linux-cachyos-lts.img").write_bytes(b"stock-lts-initramfs")
+        lts = (
+            "/Linux-CachyOS-LTS\n"
+            "    comment: kernel-id=linux-cachyos-lts\n"
+            "    protocol: linux\n"
+            "    kernel_path: boot():/vmlinuz-linux-cachyos-lts\n"
+            "    module_path: boot():/cpu-ucode.img\n"
+            "    module_path: boot():/initramfs-linux-cachyos-lts.img\n"
+            "    cmdline: quiet splash\n"
+        )
+        config = self.esp / "limine.conf"
+        text = self.original.replace("/User rescue\n", lts + "/User rescue\n")
+        if not keep_standard:
+            start = text.index("/Linux-CachyOS\n")
+            end = text.index("/Linux-CachyOS-LTS\n")
+            text = text[:start] + text[end:]
+        config.write_text(text)
+
     def rewrite_snapshot(self, version="2.1.10", hostile_module=False):
         manifest = recovery.STATE() / "manifest.json"
         data = json.loads(manifest.read_text())
@@ -101,6 +121,44 @@ class RecoveryTest(unittest.TestCase):
         self.assertTrue(data["stock_boot_verified"])
         self.assertEqual(data["machine"]["bios"], "F.13")
         self.assertEqual(data["dsdt"]["revision"], recovery.STOCK_REVISION)
+
+    def test_standard_and_lts_are_unambiguous_and_lts_snapshot_stays_bound(self):
+        self.add_lts_entry(keep_standard=False)
+        config = self.esp / "limine.conf"
+        config.write_text(
+            config.read_text().replace(
+                "/Linux-CachyOS-LTS\n", "/CachyOS long-term kernel\n", 1
+            )
+        )
+        data = self.prepare()
+        self.assertEqual(data["source_entry"].lower(), "cachyos long-term kernel")
+        self.assertEqual(data["original_kernel_path"], "boot():/vmlinuz-linux-cachyos-lts")
+
+        lts_only = (self.esp / "limine.conf").read_text()
+        standard = self.original[
+            self.original.index("/Linux-CachyOS\n") : self.original.index("/User rescue\n")
+        ]
+        (self.esp / "limine.conf").write_text(lts_only.replace("/User rescue\n", standard + "/User rescue\n"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            recovery.status()
+        report = output.getvalue()
+        self.assertIn("NORMAL_KERNELS\tlinux-cachyos,linux-cachyos-lts", report)
+        self.assertIn("SNAPSHOT\tvalid", report)
+
+        before = (self.esp / "limine.conf").read_bytes()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            recovery.recover()
+        self.assertIn("NORMAL\tLinux-CachyOS", output.getvalue())
+        self.assertEqual((self.esp / "limine.conf").read_bytes(), before)
+
+        (self.esp / "limine.conf").write_text(self.original)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            recovery.status()
+        self.assertIn("NORMAL_KERNELS\tlinux-cachyos", output.getvalue())
+        self.assertIn("SNAPSHOT\tstale", output.getvalue())
 
     def test_prepare_rejects_nonstock_states_and_unsupported_machine(self):
         for state in ("s5", "combined", "unknown", "unavailable"):

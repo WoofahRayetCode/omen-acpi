@@ -16,6 +16,7 @@ omen-acpi dependencies [--install]
 omen-acpi collect
 omen-acpi build <s5|combined|both> [SOURCE_ARCHIVE]
 omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]
+omen-acpi refresh [s5|combined|all]
 omen-acpi status [s5|combined|all]
 omen-acpi remove <s5|combined|all>
 omen-acpi artifacts
@@ -94,7 +95,8 @@ Guided setup performs these stages in order:
 5. prepares or refreshes a verified preventive stock snapshot;
 6. privately collects and fingerprints the original DSDT;
 7. builds and independently verifies the requested transformation;
-8. transactionally creates a separate Limine test entry;
+8. transactionally creates a separate Limine test entry for each detected
+   primary `linux-cachyos` / `linux-cachyos-lts` kernel;
 9. offers a reboot and names the entry the user must select.
 
 The complete choice is displayed before confirmation:
@@ -131,8 +133,9 @@ Use the widest status view after every managed boot or relevant system update:
 omen-acpi status all
 ```
 
-Status compares the active DSDT with each managed AML, verifies entry and root
-state ownership, and detects stale kernel or initramfs snapshots. Combined
+Status compares the active DSDT with each managed AML and reports the running
+kernel, every detected supported kernel, fallback presence, ordered initramfs
+count, detected NVIDIA module names and each corresponding owned entry. Combined
 status also reports relevant `AE_AML_BUFFER_LIMIT`, `WQBZ` and `WQBE` messages
 from the current boot.
 
@@ -145,33 +148,33 @@ result blocks collection and installation.
 
 Managed lifecycle states include:
 
-- `CURRENT`: the managed entry and stored payloads match the current expected
-  state;
+- `CURRENT`: every detected supported kernel has the exact managed entry
+  expected from its current stock Limine metadata;
 - `LEGACY / REINSTALL`: ownership is recognized, but the entry must be removed
   from a normal stock boot and installed fresh;
 - `CONFLICT / BLOCKED`: state is partial, mixed or externally modified and is
   never changed automatically;
-- stale kernel/initramfs: a system update requires fresh entry creation.
+- stale kernel/initramfs: run `omen-acpi refresh` before booting the owned entry.
 
 ## Entry lifecycle
 
-Each experimental entry contains a snapshot of the normal kernel, all normal
-initramfs components and the command line that existed at creation time. The
-variant lifecycle is intentionally limited to fresh installation and verified
-removal. There is no in-place payload refresh, migration or old-payload
-restoration.
+Each experimental entry references the current stock kernel and ordered stock
+initramfs components for exactly one kernel ID. It prepends one shared
+variant-specific ACPI early CPIO. This avoids per-variant copies of the kernel,
+initramfs and NVIDIA modules while keeping standard and LTS entry identity
+separate.
 
-After a kernel, initramfs or Limine update, return to stock and recreate the
-installed variants:
+After a kernel, initramfs or Limine update—or after installing/removing LTS—run:
 
 ```bash
-omen-acpi remove all
-omen-acpi install both
+omen-acpi refresh all
 ```
 
-Use `s5` or `combined` instead of `both` when appropriate. A fresh install
-reuses the verified ACPI transformation but copies the current normal boot
-payloads and command line.
+Use `s5` or `combined` instead of `all` when appropriate. Refresh verifies the
+old ownership record, current stock paths and BLAKE2 hashes, initramfs contents
+and the new result before committing. Repeating it makes no duplicate entries.
+Recognized v2.2.0 single-kernel managed state is migrated in place using its
+already verified AML; pre-managed legacy state retains its normal removal path.
 
 Removing a currently active entry does not unload its DSDT from the running
 kernel. Reboot into the normal entry before collecting a new source or testing
@@ -208,8 +211,9 @@ confirm a full upgrade.
 ## Program updates and repair
 
 Running `sudo ./install.sh` over an existing installation updates the program,
-public command and installed documentation. It does not rewrite `/var/lib`
-variant state, Limine entries, command-line drop-ins or ESP payloads.
+public command and installed documentation. It then reconciles recognized
+managed state with current standard/LTS entries. A failed reconciliation leaves
+stock entries intact and reports the explicit `omen-acpi refresh` command.
 
 The separately distributed `update.sh` is reusable. Keep it with the release
 archive and adjacent `.sha256`, then run it as the normal user. On first use it
@@ -259,8 +263,8 @@ operation logs. Neither command publishes anything.
 | `BLOCKED: an ACPI override is active in this boot` | Reboot into the normal entry before collection or installation. |
 | `CONFLICT / BLOCKED` | External or partial state was detected. Nothing is changed automatically; inspect it from a stock boot. |
 | `LEGACY / REINSTALL` | Return to stock, remove the entry and install a fresh one. |
-| Stale kernel/initramfs snapshot | Run `omen-acpi remove all`, then reinstall the intended variants. |
-| Recovery is missing or refresh-required | Keep `linux-cachyos`, boot it cleanly and run `omen-acpi prepare-stock-recovery`. |
+| Stale standard/LTS entry metadata | Run `omen-acpi refresh all` before selecting an owned entry. |
+| Recovery is missing or refresh-required | Keep at least one supported stock entry, boot it cleanly and run `omen-acpi prepare-stock-recovery`. |
 | Normal entry and trusted snapshot are both missing | Do not reuse a variant initramfs; use external manual recovery media. |
 | Recovery manifest or payload hash fails | Nothing is changed. Restore a normal stock boot externally and prepare a fresh snapshot. |
 | Only one half of the recovery pair exists | Status reports `modified`; inspect it manually. It is not repaired or deleted automatically. |

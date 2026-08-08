@@ -166,7 +166,9 @@ fi
     || fail "version-bound validation plan still exists"
 grep -Fq '## Development process' "$ROOT/README.md" \
     || fail "Codex development-process disclaimer is missing"
-for removed_command in migrate restore-legacy refresh; do
+grep -Fq 'omen-acpi refresh [s5|combined|all]' <<<"$cli_help" \
+    || fail "CLI help omits multi-kernel refresh"
+for removed_command in migrate restore-legacy; do
     if grep -Eq "^[[:space:]]*omen-acpi ${removed_command}([[:space:]]|$)" <<<"$cli_help"; then
         fail "removed command is still advertised: $removed_command"
     fi
@@ -192,7 +194,7 @@ for invalid_case in \
         || fail "invalid CLI arguments did not fail with usage: $invalid_case"
 done
 
-for removed_command in migrate restore-legacy refresh; do
+for removed_command in migrate restore-legacy; do
     if OMEN_ACPI_TESTING=1 HOME="$work/home" \
         "$ROOT/omen-acpi" "$removed_command" s5 \
         >"$work/removed.out" 2>"$work/removed.err"; then
@@ -202,7 +204,7 @@ for removed_command in migrate restore-legacy refresh; do
         || fail "removed CLI command did not explain the replacement flow: $removed_command"
 done
 
-for removed_action in migrate restore-legacy refresh; do
+for removed_action in migrate restore-legacy; do
     if "$ROOT/scripts/03-manage-limine-entry.sh" "$removed_action" s5 \
         >"$work/removed-manager.out" 2>"$work/removed-manager.err"; then
         fail "private manager accepted removed action: $removed_action"
@@ -1083,6 +1085,41 @@ for kind in directory broken-symlink; do
     if [[ -L "$payload" ]]; then rm -f -- "$payload"; else rm -rf -- "$payload"; fi
 done
 
+for entry_name in zz-omen-acpi-s5-test-lts zz-omen-acpi-combined-test-lts; do
+    printf 'timeout: 5\n/CachyOS\n//%s\n' "$entry_name" \
+        > "$pre_uninstall_fixture/esp/limine.conf"
+    if TEST_ESP="$pre_uninstall_fixture/esp" \
+        bash -c '
+            source "$1"
+            require_root() { :; }
+            acquire_lock() { :; }
+            find_esp() { printf "%s\\n" "$TEST_ESP"; }
+            pre_uninstall_check_action
+        ' _ "$pre_uninstall_fixture/manager-functions.sh" \
+        >"$work/pre-uninstall-entry.out" 2>"$work/pre-uninstall-entry.err"; then
+        fail "pre-uninstall accepted reserved LTS entry $entry_name"
+    fi
+    grep -Fq "$entry_name" "$work/pre-uninstall-entry.err" \
+        || fail "pre-uninstall did not identify reserved LTS entry $entry_name"
+done
+
+printf 'timeout: 5\n/Linux-CachyOS\n' > "$pre_uninstall_fixture/esp/limine.conf"
+mkdir "$pre_uninstall_fixture/esp/omen-acpi"
+if TEST_ESP="$pre_uninstall_fixture/esp" \
+    bash -c '
+        source "$1"
+        require_root() { :; }
+        acquire_lock() { :; }
+        find_esp() { printf "%s\\n" "$TEST_ESP"; }
+        pre_uninstall_check_action
+    ' _ "$pre_uninstall_fixture/manager-functions.sh" \
+    >"$work/pre-uninstall-payload.out" 2>"$work/pre-uninstall-payload.err"; then
+    fail "pre-uninstall accepted an orphan multi-kernel payload"
+fi
+grep -Fq 'Managed multi-kernel payloads still exist' \
+    "$work/pre-uninstall-payload.err" \
+    || fail "pre-uninstall did not diagnose orphan multi-kernel payload"
+
 printf 'transform checks...\n'
 python3 "$ROOT/tests/test_transform.py"
 
@@ -1091,6 +1128,9 @@ python3 "$ROOT/tests/test_unvalidated.py"
 
 printf 'stock recovery checks...\n'
 python3 "$ROOT/tests/test_stock_recovery.py"
+
+printf 'multi-kernel entry checks...\n'
+python3 "$ROOT/tests/test_kernel_entries.py"
 
 printf 'interactive menu checks...\n'
 bash "$ROOT/tests/test_interactive_menus.sh"

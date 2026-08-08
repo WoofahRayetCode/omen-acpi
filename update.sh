@@ -610,6 +610,7 @@ required_release_files = {
     "omen-acpi",
     "scripts/03-manage-limine-entry.sh",
     "scripts/04-stock-recovery.py",
+    "scripts/05-kernel-entries.py",
 }
 if not required_release_files.issubset(release_files):
     missing = sorted(required_release_files - set(release_files))
@@ -782,7 +783,12 @@ install_release() {
     printf 'Manager: %s\n' "$manager_version"
     printf '\nCommands named omen-acpi found in PATH:\n'
     PATH="$ORIGINAL_PATH" type -a omen-acpi || true
-    printf '\nProgram updates do not rewrite Limine entries or ACPI state.\n'
+    if [[ -d /var/lib/omen-acpi-s5-test || -d /var/lib/omen-acpi-combined-test ]]; then
+        printf '\nReconciling existing managed entries with installed standard/LTS kernels.\n'
+        if ! "$INSTALLED_CLI" --plain --yes refresh all; then
+            warn "Program update succeeded, but entry migration needs attention; run 'omen-acpi refresh all'."
+        fi
+    fi
     report_command_cache_advice
 }
 
@@ -876,8 +882,8 @@ main() {
         fi
     fi
 
-    printf '\nOnly the toolkit program under /usr/local will be updated.\n'
-    printf 'Limine entries, /var/lib state, drop-ins and the ESP are not rewritten.\n'
+    printf '\nThe toolkit program will be updated first.\n'
+    printf 'Existing managed entries are then reconciled transactionally with standard/LTS kernels.\n'
     confirm_installation || exit 0
     install_release
 }

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Supports the primary `linux-cachyos` and `linux-cachyos-lts` Limine entries
+  independently, including systems with either kernel or both installed. Each
+  variant gets one clearly named entry per detected primary kernel; fallback
+  entries remain stock and are reported by status.
+- Reuses each stock kernel and its ordered initramfs/module paths, prepending a
+  small hash-bound early ACPI CPIO instead of freezing full kernel/initramfs
+  copies. `omen-acpi refresh` reconciles additions, removals and hash changes
+  idempotently while preserving stock and unrelated Limine entries.
+- Adds in-place refresh migration for the previous managed single-kernel state,
+  per-kernel status and NVIDIA-module reporting, standard/LTS-aware recovery,
+  stricter uninstall orphan checks, and synthetic standard-only, LTS-only,
+  dual-kernel, fallback, update and removal coverage.
+- This is a static compatibility extension on `main`; it adds no new hardware
+  validation claim, tag, release or release candidate.
 - Corrects the documented reference validation environment: CachyOS kernel
   `7.1.5-1-cachyos`, package `linux-cachyos-nvidia-open 7.1.5-1`, NVIDIA Open
   Kernel Module `610.43.03`, `nvidia-utils 610.43.03-1`, and RTX 5070 Mobile.

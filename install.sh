@@ -226,8 +226,10 @@ release_files=(
     scripts/02-build-dsdt.sh
     scripts/03-manage-limine-entry.sh
     scripts/04-stock-recovery.py
+    scripts/05-kernel-entries.py
     tests/run.sh
     tests/test_interactive_menus.sh
+    tests/test_kernel_entries.py
     tests/test_stock_recovery.py
     tests/test_transform.py
     tests/test_unvalidated.py
@@ -360,7 +362,8 @@ for script_name in \
     00-probe-boot.sh \
     01-collect-acpi.sh \
     02-build-dsdt.sh \
-    03-manage-limine-entry.sh; do
+    03-manage-limine-entry.sh \
+    05-kernel-entries.py; do
     install -o root -g root -m 0755 \
         "$source_snapshot/scripts/$script_name" \
         "$app_stage/scripts/$script_name"
@@ -428,6 +431,16 @@ cleanup_stages
 source_snapshot=''
 trap - EXIT
 
+for variant in s5 combined; do
+    state="/var/lib/omen-acpi-${variant}-test"
+    if [[ -d "$state" && ! -L "$state" ]]; then
+        if ! OMEN_ACPI_LOCK_FD9_HELD=1 \
+            "$TARGET_ROOT/scripts/03-manage-limine-entry.sh" refresh "$variant"; then
+            warn "Program installation succeeded, but $variant entry migration needs attention; run 'omen-acpi refresh $variant'."
+        fi
+    fi
+done
+
 if (( existing_targets == 3 )); then
     printf '\nOMEN ACPI Toolkit updated successfully to %s.\n' "$VERSION"
 elif (( existing_targets != 0 )); then
@@ -438,5 +451,5 @@ fi
 printf 'Run it as your normal user:\n\n'
 printf '  omen-acpi\n\n'
 printf 'The guided CLI will check the machine, boot state and dependencies.\n'
-printf 'Program updates never rewrite Limine entries automatically.\n'
-printf 'After a kernel/initramfs update, remove and freshly install each experimental entry from the CLI.\n'
+printf 'Run "omen-acpi refresh" after kernel/initramfs or Limine updates.\n'
+printf 'Existing v2.2.0 single-kernel state is migrated by the same command without rebuilding AML.\n'

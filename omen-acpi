@@ -13,7 +13,9 @@ readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 readonly EXPECTED_BOARD="8E35"
 readonly EXPECTED_BIOS="F.13"
 readonly S5_ENTRY="zz-omen-acpi-s5-test"
+readonly S5_LTS_ENTRY="zz-omen-acpi-s5-test-lts"
 readonly COMBINED_ENTRY="zz-omen-acpi-combined-test"
+readonly COMBINED_LTS_ENTRY="zz-omen-acpi-combined-test-lts"
 readonly SUDO_BIN="/usr/bin/sudo"
 readonly PACMAN_BIN="/usr/bin/pacman"
 readonly SYSTEMCTL_BIN="/usr/bin/systemctl"
@@ -743,7 +745,8 @@ show_stock_reboot_prompt() {
     printf 'Restart the computer and select this normal Limine entry:\n'
     printf '  %b%s%b\n\n' "$GREEN$BOLD" "$stock_entry" "$RESET"
     printf 'Do not select:\n'
-    printf '  - %s\n  - %s\n' "$S5_ENTRY" "$COMBINED_ENTRY"
+    printf '  - %s\n  - %s\n  - %s\n  - %s\n' \
+        "$S5_ENTRY" "$S5_LTS_ENTRY" "$COMBINED_ENTRY" "$COMBINED_LTS_ENTRY"
     if [[ -n "$resume_action" ]]; then
         printf '\nRun %bomen-acpi%b again after logging in and choose Resume; the exact workflow was saved.\n' "$BOLD" "$RESET"
     fi
@@ -1233,7 +1236,12 @@ install_one() {
     local variant="$1" build_archive="${2:-}" schema
     schema="$(inspect_variant_schema "$variant")"
     case "$schema" in
-        managed) die "The $variant variant is already installed. Remove it first, then run a fresh install." ;;
+        managed)
+            section "Refresh $variant Limine entries"
+            ensure_admin
+            run_logged "refresh-$variant" "$SUDO_BIN" -- "$MANAGER" refresh "$variant"
+            return
+            ;;
         legacy) die "The $variant entry uses the old legacy format. Remove it first, then run a fresh managed install." ;;
         conflict) die "The $variant paths contain an unrecognised or modified installation. Run status; no automatic write is allowed." ;;
         absent) ;;
@@ -1255,8 +1263,40 @@ install_one() {
     run_logged "install-$variant" run_root_engine "$MANAGER" install "$variant" "$build_archive"
 }
 
+refresh_one() {
+    local variant="$1" schema
+    schema="$(inspect_variant_schema "$variant")"
+    case "$schema" in
+        absent) info "$variant is not installed."; return 0 ;;
+        conflict) die "$variant contains unrecognised or modified state; automatic refresh is blocked." ;;
+        legacy) die "$variant uses the pre-managed legacy format; remove it normally, then install again." ;;
+        managed) ;;
+    esac
+    ensure_admin
+    run_logged "refresh-$variant" "$SUDO_BIN" -- "$MANAGER" refresh "$variant"
+}
+
+refresh_variants() {
+    local requested rc=0 item_rc=0
+    requested="$(normalize_variant "${1:-all}")"
+    ensure_dependencies status
+    case "$requested" in
+        s5|combined)
+            refresh_one "$requested"
+            ;;
+        both|all)
+            refresh_one s5 || item_rc=$?
+            (( item_rc > rc )) && rc=$item_rc
+            item_rc=0
+            refresh_one combined || item_rc=$?
+            (( item_rc > rc )) && rc=$item_rc
+            ;;
+    esac
+    return "$rc"
+}
+
 install_variants() {
-    local requested build_archive="${2:-}"
+    local requested build_archive="${2:-}" first_schema second_schema
     requested="$(normalize_variant "$1")"
     if [[ -n "$build_archive" && "$requested" != "s5" && "$requested" != "combined" ]]; then
         die "An explicit build archive can only be used with one variant."
@@ -1265,6 +1305,23 @@ install_variants() {
         [[ -f "$build_archive" ]] || die "Build archive not found: $build_archive"
         build_archive="$(realpath -- "$build_archive")"
     fi
+    case "$requested" in
+        s5|combined)
+            first_schema="$(inspect_variant_schema "$requested")"
+            if [[ "$first_schema" == "managed" ]]; then
+                refresh_one "$requested"
+                return
+            fi
+            ;;
+        both|all)
+            first_schema="$(inspect_variant_schema s5)"
+            second_schema="$(inspect_variant_schema combined)"
+            if [[ "$first_schema" == "managed" && "$second_schema" == "managed" ]]; then
+                refresh_variants all
+                return
+            fi
+            ;;
+    esac
     require_transform_machine
     if [[ -n "$build_archive" ]]; then
         ensure_dependencies probe
@@ -1342,8 +1399,10 @@ status_one() {
         if (( rc == 3 )); then
             if [[ "$(variant_probe_format "$variant")" == "legacy" ]]; then
                 warn "$variant is a recognised legacy entry; remove it before a fresh managed install."
+            elif [[ "$(variant_probe_format "$variant")" == "managed" ]]; then
+                warn "$variant has stale, missing or obsolete per-kernel entries; run 'omen-acpi refresh $variant'."
             else
-                warn "$variant requires attention. Remove and freshly install it before testing."
+                warn "$variant requires attention; modified or ambiguous state remains blocked."
             fi
             return 3
         fi
@@ -1538,11 +1597,13 @@ offer_test_reboot() {
     section "Ready to test"
     printf 'The normal CachyOS entry was preserved. At the next Limine menu choose:\n'
     case "$requested" in
-        s5) printf '  %b%s%b\n' "$GREEN$BOLD" "$S5_ENTRY" "$RESET" ;;
-        combined) printf '  %b%s%b\n' "$GREEN$BOLD" "$COMBINED_ENTRY" "$RESET" ;;
+        s5) printf '  %b%s%b (standard) or %b%s%b (LTS)\n' \
+            "$GREEN$BOLD" "$S5_ENTRY" "$RESET" "$GREEN$BOLD" "$S5_LTS_ENTRY" "$RESET" ;;
+        combined) printf '  %b%s%b (standard) or %b%s%b (LTS)\n' \
+            "$GREEN$BOLD" "$COMBINED_ENTRY" "$RESET" "$GREEN$BOLD" "$COMBINED_LTS_ENTRY" "$RESET" ;;
         both|all)
-            printf '  %b%s%b  or\n' "$GREEN$BOLD" "$S5_ENTRY" "$RESET"
-            printf '  %b%s%b\n' "$GREEN$BOLD" "$COMBINED_ENTRY" "$RESET"
+            printf '  %b%s%b / %b%s%b\n' "$GREEN$BOLD" "$S5_ENTRY" "$RESET" "$GREEN$BOLD" "$S5_LTS_ENTRY" "$RESET"
+            printf '  %b%s%b / %b%s%b\n' "$GREEN$BOLD" "$COMBINED_ENTRY" "$RESET" "$GREEN$BOLD" "$COMBINED_LTS_ENTRY" "$RESET"
             ;;
     esac
     printf '\nDo not make an experimental entry the default until it has been tested repeatedly.\n'
@@ -1581,15 +1642,15 @@ guided_setup() {
         schema="$(inspect_variant_schema s5)"
         [[ "$schema" != "conflict" ]] \
             || die "S5-only contains modified or ambiguous state; guided setup is blocked."
-        [[ "$schema" == "absent" ]] \
-            || die "S5-only is already installed. Remove it first, then start a fresh installation."
+        [[ "$schema" == "absent" || "$schema" == "managed" ]] \
+            || die "S5-only cannot be reconciled automatically from its current format."
     fi
     if [[ "$requested" == "combined" || "$requested" == "both" ]]; then
         schema="$(inspect_variant_schema combined)"
         [[ "$schema" != "conflict" ]] \
             || die "Combined contains modified or ambiguous state; guided setup is blocked."
-        [[ "$schema" == "absent" ]] \
-            || die "Combined is already installed. Remove it first, then start a fresh installation."
+        [[ "$schema" == "absent" || "$schema" == "managed" ]] \
+            || die "Combined cannot be reconciled automatically from its current format."
     fi
 
     source_archive="$(latest_source 2>/dev/null || true)"
@@ -1943,6 +2004,7 @@ Usage:
   omen-acpi collect
   omen-acpi build <s5|combined|both> [SOURCE_ARCHIVE]
   omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]
+  omen-acpi refresh [s5|combined|all]
   omen-acpi status [s5|combined|all]
   omen-acpi remove <s5|combined|all>
   omen-acpi artifacts
@@ -2043,8 +2105,13 @@ main() {
             case "$1" in s5|combined|both) ;; *) die "Usage: omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]" ;; esac
             install_variants "$1" "${2:-}"
             ;;
-        migrate|restore-legacy|refresh)
-            die "This command was removed. From the normal CachyOS boot, remove the entry and install it again."
+        refresh)
+            (($# <= 1)) || die "Usage: omen-acpi refresh [s5|combined|all]"
+            case "${1:-all}" in s5|combined|all) ;; *) die "Usage: omen-acpi refresh [s5|combined|all]" ;; esac
+            refresh_variants "${1:-all}"
+            ;;
+        migrate|restore-legacy)
+            die "This command was removed."
             ;;
         status)
             (($# <= 1)) || die "Usage: omen-acpi status [s5|combined|all]"

@@ -36,6 +36,7 @@ END = "# END OMEN-ACPI OWNED STOCK RECOVERY v1"
 EXPECTED = ("OMEN Gaming Laptop 16-ap0xxx", "8E35", "F.13")
 STOCK_REVISION = "0x01072009"
 VARIANT_MARKERS = ("omen_acpi.variant=",)
+SUPPORTED_KERNELS = ("linux-cachyos", "linux-cachyos-lts")
 
 
 class Failure(RuntimeError):
@@ -230,6 +231,7 @@ def entries(text: str) -> list[dict]:
         item["end"] = found[index + 1]["start"] if index + 1 < len(found) else len(lines)
         options: dict[str, str] = {}
         modules: list[str] = []
+        comments: list[str] = []
         for line in lines[item["start"] + 1:item["end"]]:
             match = OPTION_RE.match(line)
             if not match:
@@ -237,11 +239,14 @@ def entries(text: str) -> list[dict]:
             key, value = match.group(1).lower(), match.group(2)
             if key == "module_path":
                 modules.append(value)
-            elif key != "comment":
+            elif key == "comment":
+                comments.append(value)
+            else:
                 if key in options:
                     item["duplicate"] = key
                 options[key] = value
-        item.update(options=options, modules=modules, block="\n".join(lines[item["start"]:item["end"]]))
+        item.update(options=options, modules=modules, comments=comments,
+                    block="\n".join(lines[item["start"]:item["end"]]))
     return found
 
 
@@ -257,17 +262,75 @@ def boot_fields(item: dict) -> tuple[str, str, list[str]]:
     return options[kernels[0]], command, item["modules"]
 
 
-def normal_entry(text: str, *, required: bool = True) -> dict | None:
+def normal_entries(text: str) -> list[dict]:
     found = entries(text)
-    named = [item for item in found if item["title"].lower() == "linux-cachyos"]
-    if named:
-        level = min(item["level"] for item in named)
-        candidates = [item for item in named if item["level"] == level]
-    else:
-        candidates = []
+    candidates = []
+    namespace = None
+
+    def historical(item: dict) -> bool:
+        parent = item["parent"]
+        while parent is not None:
+            ancestor = found[parent]
+            if "snapshot" in ancestor["title"].lower():
+                return True
+            parent = ancestor["parent"]
+        return False
+
+    for kernel_id in SUPPORTED_KERNELS:
+        named = []
+        for item in found:
+            markers = [
+                value.split("=", 1)[1].lower()
+                for value in item["comments"]
+                if value.lower().startswith("kernel-id=")
+            ]
+            if len(markers) > 1:
+                raise Failure(f"normal CachyOS entry {item['title']!r} has duplicate kernel-id markers")
+            if item["title"].lower() == kernel_id and markers and markers != [kernel_id]:
+                raise Failure(f"normal CachyOS entry {item['title']!r} has a conflicting kernel-id marker")
+            if item["title"].lower() != kernel_id and markers != [kernel_id]:
+                continue
+            if not historical(item):
+                named.append(item)
+        if len(named) > 1:
+            raise Failure(f"normal CachyOS entry {kernel_id!r} is ambiguous")
+        if not named:
+            continue
+        item = named[0]
+        current_namespace = (item["level"], item["parent"])
+        if namespace is None:
+            namespace = current_namespace
+        elif namespace != current_namespace:
+            raise Failure("normal CachyOS entries do not share one active namespace")
+        item["kernel_id"] = kernel_id
+        candidates.append(item)
+    if not candidates:
+        inferred = {}
         for item in found:
             searchable = f"{item['title']}\n{item['block']}".lower()
-            if "linux-cachyos" in searchable and not any(word in searchable for word in ("fallback", "snapshot", "omen-acpi")):
+            if (
+                "linux-cachyos" not in searchable
+                or historical(item)
+                or any(word in searchable for word in ("fallback", "snapshot", "omen-acpi"))
+            ):
+                continue
+            kernel_id = (
+                "linux-cachyos-lts"
+                if "linux-cachyos-lts" in searchable
+                else "linux-cachyos"
+            )
+            if kernel_id in inferred:
+                raise Failure(f"normal CachyOS entry {kernel_id!r} is ambiguous")
+            inferred[kernel_id] = item
+        for kernel_id in SUPPORTED_KERNELS:
+            if kernel_id in inferred:
+                item = inferred[kernel_id]
+                current_namespace = (item["level"], item["parent"])
+                if namespace is None:
+                    namespace = current_namespace
+                elif namespace != current_namespace:
+                    raise Failure("normal CachyOS entries do not share one active namespace")
+                item["kernel_id"] = kernel_id
                 candidates.append(item)
     valid = []
     for item in candidates:
@@ -275,10 +338,13 @@ def normal_entry(text: str, *, required: bool = True) -> dict | None:
             boot_fields(item)
             valid.append(item)
         except Failure:
-            if item["title"].lower() == "linux-cachyos":
+            if item["title"].lower() in SUPPORTED_KERNELS:
                 raise
-    if len(valid) > 1:
-        raise Failure("normal CachyOS entry selection is ambiguous")
+    return valid
+
+
+def normal_entry(text: str, *, required: bool = True) -> dict | None:
+    valid = normal_entries(text)
     if not valid:
         if required:
             raise Failure("normal CachyOS entry is missing")
@@ -436,9 +502,9 @@ def stable_fingerprint(path: Path) -> tuple[tuple[int, int, int, int, int, int],
     return identity, digest
 
 
-def validate_normal_source(text: str, esp: Path) -> dict:
+def validate_normal_source(text: str, esp: Path, source: dict | None = None) -> dict:
     """Select and fully validate the normal entry and each referenced payload."""
-    source = normal_entry(text)
+    source = source if source is not None else normal_entry(text)
     assert source is not None
     kernel_value, command, modules = boot_fields(source)
     if any(marker in command for marker in VARIANT_MARKERS) or "omen_acpi.stock_recovery=" in command:
@@ -1082,25 +1148,35 @@ def status() -> None:
     snapshot_state = normal_state = recovery_state = "unavailable"
     data = None
     normal = None
+    normal_sources = []
+    normal_kernel_ids: list[str] = []
     text = ""
     try:
         read_machine()
         esp = esp_path()
         text = (esp / "limine.conf").read_text(encoding="utf-8", errors="strict")
         try:
-            normal = normal_entry(text, required=False)
+            candidates = normal_entries(text)
         except Failure:
             normal_state = "ambiguous"
         else:
-            if normal is None:
+            if not candidates:
                 normal_state = "missing"
             else:
                 try:
-                    source_data = validate_normal_source(text, esp)
-                    normal = source_data["entry"]
+                    normal_sources = [
+                        validate_normal_source(text, esp, candidate)
+                        for candidate in candidates
+                    ]
+                    normal = normal_sources[0]["entry"]
+                    normal_kernel_ids = [
+                        item["entry"].get("kernel_id", item["entry"]["title"].lower())
+                        for item in normal_sources
+                    ]
                     normal_state = "available"
                 except Failure:
                     normal = None
+                    normal_sources = []
                     normal_state = "unusable"
 
         payload = esp / "omen-acpi-stock-recovery"
@@ -1117,12 +1193,24 @@ def status() -> None:
                     snapshot_state = "valid"
                 else:
                     snapshot_state = "refresh-required"
-                if normal is not None and snapshot_state == "valid":
-                    source_data = validate_normal_source(text, esp)
-                    sources = [source_data["kernel"], *[item[0] for item in source_data["modules"]]]
-                    stored = data["payloads"]
-                    if len(sources) != len(stored) or any(sha(source) != item["sha256"] for source, item in zip(sources, stored)):
+                if normal_sources and snapshot_state == "valid":
+                    stored_normalized = (
+                        data["source_entry"],
+                        data["original_kernel_path"],
+                        tuple(data["original_module_paths"]),
+                        data["command_line"],
+                    )
+                    source_data = next(
+                        (item for item in normal_sources if item["normalized"] == stored_normalized),
+                        None,
+                    )
+                    if source_data is None:
                         snapshot_state = "stale"
+                    else:
+                        sources = [source_data["kernel"], *[item[0] for item in source_data["modules"]]]
+                        stored = data["payloads"]
+                        if len(sources) != len(stored) or any(sha(source) != item["sha256"] for source, item in zip(sources, stored)):
+                            snapshot_state = "stale"
             except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError):
                 snapshot_state = "modified"
 
@@ -1183,6 +1271,7 @@ def status() -> None:
         hashes = "unavailable"
     emit("HASHES", hashes)
     emit("NORMAL_ENTRY", normal_state)
+    emit("NORMAL_KERNELS", ",".join(normal_kernel_ids) if normal_kernel_ids else "none")
     emit("RECOVERY_ENTRY", recovery_state)
     emit("RECOMMENDATION", recommendation)
 

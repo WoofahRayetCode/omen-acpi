@@ -56,9 +56,11 @@ read-only. Contextual recommendations never execute an action automatically.
 ## Snapshot preparation
 
 `omen-acpi prepare-stock-recovery` works only during a validated or explicitly
-opted-in, clean and verified stock boot. It selects one unambiguous normal
-entry, copies its kernel and every `module_path` in original order, and creates
-a manifest.
+opted-in, clean and verified stock boot. It recognizes primary
+`linux-cachyos` and `linux-cachyos-lts` entries in the active namespace,
+selects standard first when both are usable (otherwise LTS), copies that
+entry's kernel and every `module_path` in original order, and creates a
+kernel-bound manifest.
 
 The manifest records schema and toolkit versions, creation time, DMI, board,
 BIOS, stock DSDT revision and SHA-256, source title, kernel version, normalized
@@ -71,7 +73,7 @@ Preparation rejects:
 - S5, Combined, legacy, unknown or unavailable active boots;
 - DMI that is missing, unreadable, changed since the snapshot, or unvalidated
   without the current process's explicit opt-in;
-- missing, duplicate, ambiguous or unusable normal entries;
+- missing, duplicated, cross-namespace or unusable supported stock entries;
 - unsafe, non-canonical or changing paths;
 - symlinks, hard links and unexpected file types;
 - initramfs containing `kernel/firmware/acpi/`;
@@ -111,16 +113,16 @@ snapshot remains, external recovery media is required.
 
 1. On an already clean stock boot, it reports success without changing or
    rebooting anything.
-2. If one normal entry and all referenced payloads pass full stock-source
-   validation, it preserves the entry and offers the same confirmed reboot as
+2. If any supported stock entry and all referenced payloads pass full
+   stock-source validation, it preserves every stock entry and offers the same confirmed reboot as
    `reboot-stock`.
 3. If the normal entry is gone, it verifies the complete current trusted
    snapshot and creates only `zz-omen-acpi-stock-recovery`. Other entries,
    global settings, comments, order and default remain unchanged. Reboot still
    requires confirmation and names the entry to select.
 
-`omen-acpi reboot-stock` is deliberately narrower. It finds an existing normal
-entry and can request a one-time reboot after confirmation. It never creates or
+`omen-acpi reboot-stock` is deliberately narrower. It finds an existing
+standard entry, or LTS when standard is absent, and can request a one-time reboot after confirmation. It never creates or
 changes an entry.
 
 Status recommends preparation only during a clean stock boot with no snapshot
@@ -185,8 +187,10 @@ recovery state remains or while removal would orphan the only stock route.
 ## Irreducible limit
 
 This mechanism preserves known-good stock bytes; it does not reconstruct them.
-Create or refresh the current trusted snapshot while `linux-cachyos` and its
-payloads still exist. If currently booted in a variant, use
+Create or refresh the current trusted snapshot while at least one supported
+stock kernel and its payloads still exist. The manifest remains bound to that
+exact standard/LTS source even if the other kernel is installed later. If
+currently booted in a variant, use
 `omen-acpi reboot-stock`, boot the normal entry, and prepare the snapshot there.
 
 If the normal entry has already disappeared and no current trusted snapshot

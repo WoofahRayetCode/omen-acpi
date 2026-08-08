@@ -15,6 +15,7 @@ readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
 readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly BOOT_PROBE="$SCRIPT_DIR/00-probe-boot.sh"
+readonly KERNEL_ENTRIES="$SCRIPT_DIR/05-kernel-entries.py"
 
 readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 readonly EXPECTED_BOARD="8E35"
@@ -76,6 +77,7 @@ HP OMEN 16-ap0xxx BIOS F.13 ACPI override manager
 
 Usage:
   03-manage-limine-entry.sh install VARIANT BUILD_ARCHIVE
+  03-manage-limine-entry.sh refresh VARIANT
   03-manage-limine-entry.sh status VARIANT
   03-manage-limine-entry.sh inspect VARIANT
   03-manage-limine-entry.sh remove VARIANT
@@ -90,8 +92,8 @@ VARIANT must be one of:
 Actions:
   install   Build and install a separate experimental Limine entry. An explicit
             build archive is required.
-  status    Report whether the override is active and whether the stored test
-            kernel/initramfs snapshot is stale after a system update.
+  refresh   Reconcile the installed variant with every supported CachyOS kernel.
+  status    Report the running kernel and per-kernel entry state.
   remove    Remove only the entry and files owned by this manager.
   stock-entry
             Print the exact normal CachyOS Limine entry selected by the safe
@@ -1048,14 +1050,26 @@ for position, entry in enumerate(entries):
         else len(lines)
     )
 
-exact_named = [entry for entry in entries if entry["title"].lower() == "linux-cachyos"]
+supported = {"linux-cachyos", "linux-cachyos-lts"}
+
+def historical(entry):
+    parent = entry["parent"]
+    while parent is not None:
+        ancestor = entries[parent]
+        if "snapshot" in ancestor["title"].lower():
+            return True
+        parent = ancestor["parent"]
+    return False
+
+exact_named = [
+    entry for entry in entries
+    if entry["title"].lower() in supported and not historical(entry)
+]
 if exact_named:
     shallowest_named_level = min(entry["level"] for entry in exact_named)
     evaluation_entries = [
         entry for entry in exact_named if entry["level"] == shallowest_named_level
     ]
-    if len(evaluation_entries) != 1:
-        raise SystemExit("normal CachyOS entry selection is ambiguous")
 else:
     evaluation_entries = entries
 
@@ -1077,7 +1091,7 @@ for entry in evaluation_entries:
         elif key == "comment":
             continue
         elif key in options:
-            if title.lower() == "linux-cachyos":
+            if title.lower() in supported:
                 raise SystemExit(
                     f"normal CachyOS entry repeats boot option {key!r}"
                 )
@@ -1091,7 +1105,7 @@ for entry in evaluation_entries:
     kernel_aliases = [key for key in ("kernel_path", "path") if key in options]
     cmdline_aliases = [key for key in ("cmdline", "kernel_cmdline") if key in options]
     if len(kernel_aliases) != 1 or len(cmdline_aliases) > 1:
-        if title.lower() == "linux-cachyos":
+        if title.lower() in supported:
             raise SystemExit(
                 "normal CachyOS entry contains ambiguous kernel or command-line aliases"
             )
@@ -1107,6 +1121,8 @@ for entry in evaluation_entries:
     score = 0
     if title.lower() == "linux-cachyos":
         score += 300
+    if title.lower() == "linux-cachyos-lts":
+        score += 250
     if "linux-cachyos" in title.lower():
         score += 180
     if "kernel-id=linux-cachyos" in searchable:
@@ -1558,14 +1574,13 @@ check_source_initramfs() {
     done
 }
 
-build_composite_initramfs() {
+build_early_initramfs() {
     local aml="$1"
     local work="$2"
     local destination="$3"
-    local early_dir early_cpio module
+    local early_dir
 
     early_dir="$work/early"
-    early_cpio="$work/omen-acpi-s5-early.cpio"
     mkdir -p "$early_dir/kernel/firmware/acpi"
     install -m 0644 "$aml" "$early_dir/kernel/firmware/acpi/DSDT.aml"
 
@@ -1577,13 +1592,8 @@ build_composite_initramfs() {
             kernel/firmware/acpi \
             kernel/firmware/acpi/DSDT.aml \
         | cpio --null --create --format=newc --owner=0:0 --quiet \
-        > "$early_cpio"
+        > "$destination"
     )
-
-    cat "$early_cpio" > "$destination"
-    for module in "${NORMAL_MODULES_LOCAL[@]}"; do
-        cat "$module" >> "$destination"
-    done
     chmod 0600 "$destination"
 }
 
@@ -1759,6 +1769,13 @@ managed_state_valid() {
     [[ "$stored_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
     actual_hash="$(sha256_file "$STATE_DIR/DSDT.aml")"
     [[ "$actual_hash" == "$stored_hash" ]] || return 1
+    if [[ -e "$STATE_DIR/kernel-entries.json" || -L "$STATE_DIR/kernel-entries.json" ]]; then
+        for file in kernel-entries.json early.cpio early.sha256; do
+            [[ -f "$STATE_DIR/$file" && ! -L "$STATE_DIR/$file" ]] || return 1
+        done
+        [[ "$(sha256_file "$STATE_DIR/early.cpio")" == "$(tr -d '[:space:]' < "$STATE_DIR/early.sha256")" ]] \
+            || return 1
+    fi
     if [[ -f "$STATE_DIR/manager-version.txt" && ! -L "$STATE_DIR/manager-version.txt" ]]; then
         manager_version="$(<"$STATE_DIR/manager-version.txt")"
     fi
@@ -1820,7 +1837,7 @@ prepare_candidate_state() {
     local esp="$2"
     local work="$3"
     local candidate="$4"
-    local aml combined free_bytes needed_bytes trusted_archive archive_size
+    local aml early free_bytes needed_bytes trusted_archive archive_size
     local live_dsdt live_dsdt_sha
 
     mkdir -p "$candidate"
@@ -1845,15 +1862,16 @@ prepare_candidate_state() {
     live_dsdt_sha="$(sha256_file "$live_dsdt")"
     [[ "$live_dsdt_sha" == "$ORIGINAL_DSDT_SHA256" ]] \
         || die "The build archive was collected from a different stock DSDT. Collect and build it again on this clean stock boot."
-    load_normal_entry "$esp" "$work/normal-entry.txt"
-    check_source_initramfs
+    [[ -x "$KERNEL_ENTRIES" ]] \
+        || die "Multi-kernel entry manager not found: $KERNEL_ENTRIES"
+    "$KERNEL_ENTRIES" list --esp "$esp" > "$work/kernels.txt" \
+        || die "Installed CachyOS kernels could not be validated."
 
-    combined="$work/initramfs-omen-acpi-${VARIANT}-test.img"
-    build_composite_initramfs "$aml" "$work" "$combined"
+    early="$work/omen-acpi-${VARIANT}-early.cpio"
+    build_early_initramfs "$aml" "$work" "$early"
 
     needed_bytes=$((
-        $(stat -c '%s' "$combined")
-        + $(stat -c '%s' "$NORMAL_KERNEL_LOCAL")
+        $(stat -c '%s' "$early")
         + 16777216
     ))
     free_bytes="$(df --output=avail -B1 "$esp" | tail -n 1 | tr -d '[:space:]')"
@@ -1869,20 +1887,12 @@ prepare_candidate_state() {
     cp -a "$work/build/DSDT-${VARIANT}.patch" "$candidate/DSDT.patch"
     cp -a "$work/build/compile.log" "$candidate/compile.log"
     cp -a "$work/roundtrip/roundtrip.log" "$candidate/roundtrip.log"
-    cp -a "$NORMAL_KERNEL_LOCAL" "$candidate/kernel.img"
-    cp -a "$combined" "$candidate/initramfs.img"
-    cp -a "$esp/limine.conf" "$candidate/limine.conf.before"
-
-    write_dropin_file \
-        "$candidate/dropin.conf" \
-        "$NORMAL_CMDLINE"
-    sha256_file "$candidate/dropin.conf" > "$candidate/dropin.sha256"
-    write_normal_assets "$candidate/normal-assets.tsv"
+    cp -a "$early" "$candidate/early.cpio"
 
     printf '%s\n' "$VERSION" > "$candidate/manager-version.txt"
     printf '%s\n' "$VARIANT" > "$candidate/variant.txt"
     printf '%s\n' "$esp" > "$candidate/esp-path.txt"
-    printf '%s\n' "$NORMAL_TITLE" > "$candidate/source-entry.txt"
+    printf '%s\n' 'dynamic:linux-cachyos,linux-cachyos-lts' > "$candidate/source-entry.txt"
     printf '%s\n' "$EXPECTED_PATCHED_REVISION" > "$candidate/expected-revision.txt"
     printf '%s\n' "$ORIGINAL_DSDT_SHA256" > "$candidate/original-dsdt.sha256"
     printf '%s\n%s\n%s\n' "$MACHINE_PRODUCT" "$MACHINE_BOARD" "$MACHINE_BIOS" \
@@ -1891,8 +1901,7 @@ prepare_candidate_state() {
     printf '%s\n' "$(date --iso-8601=seconds)" > "$candidate/created-at.txt"
     sha256_file "$candidate/source-build.tar.gz" > "$candidate/source-build.sha256"
     sha256_file "$candidate/DSDT.aml" > "$candidate/DSDT.sha256"
-    sha256_file "$candidate/kernel.img" > "$candidate/kernel.sha256"
-    sha256_file "$candidate/initramfs.img" > "$candidate/initramfs.sha256"
+    sha256_file "$candidate/early.cpio" > "$candidate/early.sha256"
 
     chown -R root:root "$candidate"
     find "$candidate" -type f -exec chmod 0600 {} +
@@ -2001,17 +2010,14 @@ rollback_new_install() {
 commit_new_install() {
     local config="$1"
     local candidate="$2"
-    local work="$3"
-
-    install_dropin "$candidate/dropin.conf" || return 1
-    add_test_entry "$candidate" || return 1
-    config_contains_entry "$config" || return 1
-
-    extract_normal_entry "$config" "$work/normal-entry-after.txt" || return 1
-    cmp -s "$work/normal-entry.txt" "$work/normal-entry-after.txt" || return 1
 
     [[ ! -e "$STATE_DIR" ]] || return 1
     mv -- "$candidate" "$STATE_DIR" || return 1
+    if ! "$KERNEL_ENTRIES" sync --esp "$(dirname -- "$config")" \
+        --state "$STATE_DIR" --variant "$VARIANT"; then
+        mv -- "$STATE_DIR" "$candidate" || true
+        return 1
+    fi
     return 0
 }
 
@@ -2036,7 +2042,7 @@ install_action() {
     [[ ! -e "$STATE_DIR" ]] \
         || die "Managed state already exists. Remove the entry before a fresh installation."
     [[ ! -e "$DROPIN" ]] \
-        || die "The reserved Limine drop-in already exists without managed state: $DROPIN"
+        || die "The reserved legacy Limine drop-in already exists without managed state: $DROPIN"
 
     esp="$(find_esp)"
     config="$esp/limine.conf"
@@ -2047,15 +2053,12 @@ install_action() {
     candidate="$(mktemp -d /var/lib/.omen-acpi-override-state.XXXXXX)"
     arm_override_cleanup "$work" "$candidate"
 
+    config_hash="$(sha256_file "$config")"
     prepare_candidate_state "$archive" "$esp" "$work" "$candidate"
-    config_hash="$(sha256_file "$candidate/limine.conf.before")"
     [[ "$(sha256_file "$config")" == "$config_hash" ]] \
         || die "Limine configuration changed during preparation; retry the installation."
 
-    if ! commit_new_install "$config" "$candidate" "$work"; then
-        if ! rollback_new_install "$config" "$candidate/limine.conf.before" "$candidate"; then
-            preserve_override_candidate
-        fi
+    if ! commit_new_install "$config" "$candidate"; then
         die "The experimental entry could not be installed transactionally."
     fi
     candidate=""
@@ -2070,9 +2073,94 @@ install_action() {
     log "Installation completed."
     log "Installed variant: $VARIANT ($EXPECTED_PATCHED_REVISION)"
     log "The normal CachyOS entry was not replaced."
-    log "At the next boot, select manually: $ENTRY_NAME"
+    log "Per-kernel Limine entries were synchronized for linux-cachyos and linux-cachyos-lts."
     log "Do not make the experimental entry the default."
-    log "After any kernel or initramfs update, remove and freshly install this entry before using it again."
+    log "Run refresh after a kernel/initramfs or Limine update; setup/update also performs this migration."
+}
+
+refresh_action() {
+    local esp config work backup stored_machine current_machine rc=0
+
+    require_root refresh "$VARIANT"
+    for command in \
+        awk cat cmp cpio findmnt flock grep head install lsinitcpio mktemp \
+        python3 realpath sha256sum stat sync tr; do
+        need_cmd "$command"
+    done
+    [[ -x "$KERNEL_ENTRIES" ]] \
+        || die "Multi-kernel entry manager not found: $KERNEL_ENTRIES"
+    acquire_lock
+    if [[ ! -d "$STATE_DIR" ]]; then
+        log "Nothing is installed for $VARIANT."
+        return 0
+    fi
+    verify_state_identity
+    read_machine
+    current_machine="$MACHINE_PRODUCT"$'\t'"$MACHINE_BOARD"$'\t'"$MACHINE_BIOS"
+    if stored_machine="$(state_machine 2>/dev/null)"; then
+        [[ "$stored_machine" == "$current_machine" ]] \
+            || die "Managed AML belongs to a different machine or BIOS; refresh is blocked."
+    else
+        machine_is_reference \
+            || die "Historical managed state without machine identity can only be refreshed on the validated reference."
+    fi
+    esp="$(find_esp)"
+    config="$esp/limine.conf"
+
+    if [[ -f "$STATE_DIR/kernel-entries.json" && ! -L "$STATE_DIR/kernel-entries.json" ]]; then
+        "$KERNEL_ENTRIES" sync --esp "$esp" --state "$STATE_DIR" --variant "$VARIANT"
+        log "The $VARIANT entries now match every installed supported CachyOS kernel."
+        return 0
+    fi
+
+    legacy_state_metadata >/dev/null 2>&1 \
+        && die "The pre-managed legacy $VARIANT format cannot be migrated without weakening its ownership checks; remove it normally, then install again."
+    managed_state_valid \
+        || die "The existing $VARIANT state is incomplete, modified or unsafe."
+    verify_owned_dropin
+    safe_root_regular_file "$STATE_DIR/kernel.img" \
+        && safe_root_regular_file "$STATE_DIR/initramfs.img" \
+        && [[ "$(sha256_file "$STATE_DIR/kernel.img")" == "$(<"$STATE_DIR/kernel.sha256")" ]] \
+        && [[ "$(sha256_file "$STATE_DIR/initramfs.img")" == "$(<"$STATE_DIR/initramfs.sha256")" ]] \
+        || die "The previous single-kernel payload state is incomplete or modified."
+    config_contains_entry "$config" \
+        || die "The previous single-kernel Limine entry is missing or ambiguous."
+
+    work="$(mktemp -d /var/tmp/omen-acpi-override.XXXXXX)"
+    trap 'safe_remove_temp_dir "${work:-}"' EXIT
+    backup="$work/limine.conf.before-refresh"
+    cp -a "$config" "$backup"
+    build_early_initramfs "$STATE_DIR/DSDT.aml" "$work" "$work/early.cpio"
+    install -o root -g root -m 0600 "$work/early.cpio" "$STATE_DIR/early.cpio"
+    sha256_file "$STATE_DIR/early.cpio" > "$STATE_DIR/early.sha256"
+
+    if ! limine-entry-tool --remove-kernel "$ENTRY_NAME" --quiet \
+        || config_contains_entry "$config" \
+        || ! rm -f -- "$DROPIN"; then
+        rollback_managed_removal "$config" "$backup" "$STATE_DIR" "$STATE_DIR" || true
+        die "The previous single-kernel entry could not be detached for migration."
+    fi
+    if "$KERNEL_ENTRIES" sync --esp "$esp" --state "$STATE_DIR" --variant "$VARIANT"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if (( rc != 0 )); then
+        rm -f -- "$STATE_DIR/kernel-entries.json"
+        rollback_managed_removal "$config" "$backup" "$STATE_DIR" "$STATE_DIR" || true
+        die "Multi-kernel migration failed; the previous validated entry was restored when possible."
+    fi
+
+    rm -f -- \
+        "$STATE_DIR/dropin.conf" "$STATE_DIR/dropin.sha256" \
+        "$STATE_DIR/kernel.img" "$STATE_DIR/kernel.sha256" \
+        "$STATE_DIR/initramfs.img" "$STATE_DIR/initramfs.sha256" \
+        "$STATE_DIR/normal-assets.tsv" "$STATE_DIR/limine.conf.before"
+    sync
+    safe_remove_temp_dir "$work"
+    work=""
+    trap - EXIT
+    log "Migrated $VARIANT from one frozen kernel snapshot to dynamic standard/LTS entries."
 }
 
 create_legacy_removal_backup() {
@@ -2260,15 +2348,17 @@ PY
 
 status_action() {
     local esp config work current_assets stale=0 wmi_errors revision_hex kernel_messages
-    local managed_dsdt_hash='' managed_dsdt_path=''
+    local managed_dsdt_hash='' managed_dsdt_path='' kernel_status=0
     local active_matches_managed=0 stored_machine current_machine
 
     require_root status "$VARIANT"
     for command in \
-        awk cat cmp dmesg findmnt flock grep head install mktemp od python3 \
-        realpath sha256sum stat tail tr; do
+        awk cat cmp dmesg findmnt flock grep head install lsinitcpio mktemp od python3 \
+        realpath sha256sum stat tail tr uname; do
         need_cmd "$command"
     done
+    [[ -x "$KERNEL_ENTRIES" ]] \
+        || die "Multi-kernel entry manager not found: $KERNEL_ENTRIES"
 
     acquire_lock
     read_machine
@@ -2287,6 +2377,20 @@ status_action() {
         log "Managed installation: not installed"
         active_dsdt_report "" "$EXPECTED_PATCHED_REVISION"
         return 0
+    fi
+
+    if [[ -f "$STATE_DIR/kernel-entries.json" && ! -L "$STATE_DIR/kernel-entries.json" ]]; then
+        verify_state_identity
+        esp="$(find_esp)"
+        log "Managed installation: multi-kernel"
+        log "EFI system partition: $esp"
+        if "$KERNEL_ENTRIES" status --esp "$esp" --state "$STATE_DIR" --variant "$VARIANT"; then
+            kernel_status=0
+        else
+            kernel_status=$?
+        fi
+        active_dsdt_report "$STATE_DIR/DSDT.aml" "$EXPECTED_PATCHED_REVISION"
+        return "$kernel_status"
     fi
 
     if legacy_state_metadata >/dev/null 2>&1; then
@@ -2449,10 +2553,10 @@ status_action() {
 }
 
 inspect_action() {
-    local schema="conflict" esp config work entry_count
+    local schema="conflict" esp config work entry_count output rc=0
 
     require_root inspect "$VARIANT"
-    for command in awk findmnt flock grep head install mktemp python3 realpath sha256sum stat tr; do
+    for command in awk findmnt flock grep head install lsinitcpio mktemp python3 realpath sha256sum stat tr; do
         need_cmd "$command"
     done
 
@@ -2465,11 +2569,27 @@ inspect_action() {
     entry_count="$(config_entry_count "$config" 2>/dev/null || printf invalid)"
 
     if [[ ! -e "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
-        if [[ ! -e "$DROPIN" && ! -L "$DROPIN" && "$entry_count" == "0" ]]; then
+        if output="$("$KERNEL_ENTRIES" status --esp "$esp" --variant "$VARIANT" 2>/dev/null)"; then
+            rc=0
+        else
+            rc=$?
+        fi
+        if [[ ! -e "$DROPIN" && ! -L "$DROPIN" \
+            && "$rc" == "0" && "$output" == *$'VARIANT\t'"$VARIANT"$'\tabsent'* ]]; then
             schema="absent"
         fi
     elif managed_state_valid; then
-        if [[ -f "$DROPIN" && ! -L "$DROPIN" \
+        if [[ -f "$STATE_DIR/kernel-entries.json" && ! -L "$STATE_DIR/kernel-entries.json" ]]; then
+            if output="$("$KERNEL_ENTRIES" status --esp "$esp" --state "$STATE_DIR" --variant "$VARIANT" 2>/dev/null)"; then
+                rc=0
+            else
+                rc=$?
+            fi
+            if (( rc == 0 || rc == 3 )) \
+                && grep -Eq $'^VARIANT\t'"$VARIANT"$'\t(current|stale)$' <<<"$output"; then
+                schema="managed"
+            fi
+        elif [[ -f "$DROPIN" && ! -L "$DROPIN" \
             && -f "$STATE_DIR/dropin.sha256" && ! -L "$STATE_DIR/dropin.sha256" \
             && "$(sha256_file "$DROPIN")" == "$(tr -d '[:space:]' < "$STATE_DIR/dropin.sha256")" \
             && "$entry_count" == "1" ]]; then
@@ -2544,10 +2664,10 @@ remove_legacy_action() {
 }
 
 remove_action() {
-    local esp config work config_backup removed_state
+    local esp config work config_backup removed_state output rc=0
 
     require_root remove "$VARIANT"
-    for command in awk cmp date findmnt flock grep head install mktemp python3 realpath sha256sum stat sync tr; do
+    for command in awk cmp date findmnt flock grep head install lsinitcpio mktemp python3 realpath sha256sum stat sync tr; do
         need_cmd "$command"
     done
     need_cmd limine-entry-tool
@@ -2562,6 +2682,13 @@ remove_action() {
         config="$esp/limine.conf"
         config_contains_entry "$config" \
             && die "Reserved Limine entry exists without ownership state; refusing to remove it."
+        if output="$("$KERNEL_ENTRIES" status --esp "$esp" --variant "$VARIANT" 2>/dev/null)"; then
+            rc=0
+        else
+            rc=$?
+        fi
+        (( rc == 0 )) \
+            || die "A reserved multi-kernel entry exists without ownership state; refusing to remove it."
         log "Nothing is installed."
         return 0
     fi
@@ -2576,6 +2703,26 @@ remove_action() {
     esp="$(realpath -- "$(<"$STATE_DIR/esp-path.txt")")"
     [[ -f "$esp/limine.conf" ]] || die "Stored Limine configuration is unavailable: $esp/limine.conf"
     config="$esp/limine.conf"
+
+    if [[ -f "$STATE_DIR/kernel-entries.json" && ! -L "$STATE_DIR/kernel-entries.json" ]]; then
+        removed_state="${STATE_DIR}.removed.$$.tmp"
+        [[ ! -e "$removed_state" ]] \
+            || die "Unexpected removed-state path already exists: $removed_state"
+        mv -- "$STATE_DIR" "$removed_state" \
+            || die "Managed state could not be staged for removal: $STATE_DIR"
+        if ! "$KERNEL_ENTRIES" remove --esp "$esp" --state "$removed_state" --variant "$VARIANT"; then
+            mv -- "$removed_state" "$STATE_DIR" \
+                || warn "Removal failed and managed state remains detached at: $removed_state"
+            die "The multi-kernel entries could not be removed safely."
+        fi
+        rm -rf -- "$removed_state" \
+            || warn "Entries were removed, but detached state remains at: $removed_state"
+        sync
+        log "The managed $VARIANT entries for all CachyOS kernels were removed."
+        log "Every stock CachyOS entry was preserved."
+        return 0
+    fi
+
     verify_owned_dropin
 
     work="$(mktemp -d /var/tmp/omen-acpi-override.XXXXXX)"
@@ -2622,7 +2769,6 @@ stock_entry_action() {
     for command in awk cat findmnt flock grep head install lsinitcpio mktemp python3 realpath stat; do
         need_cmd "$command"
     done
-
     acquire_lock
     read_machine
     esp="$(find_esp)"
@@ -2657,11 +2803,17 @@ pre_uninstall_check_action() {
         die "Incomplete stock-recovery state: the ESP payload still exists at $recovery_payload. Inspect or restore the managed recovery state; uninstall will not delete it implicitly."
     fi
 
+    if [[ -e "$esp/omen-acpi" || -L "$esp/omen-acpi" ]]; then
+        die "Managed multi-kernel payloads still exist at $esp/omen-acpi. Remove every variant before uninstall."
+    fi
+
     for entry_name in \
         zz-omen-acpi-s5-test \
+        zz-omen-acpi-s5-test-lts \
         zz-omen-acpi-combined-test \
+        zz-omen-acpi-combined-test-lts \
         zz-omen-acpi-stock-recovery; do
-        if grep -Fq -- "$entry_name" "$config"; then
+        if grep -Eq -- "^[[:space:]]*/+\\+?${entry_name}[[:space:]]*$" "$config"; then
             die "Reserved Limine entry is still present: $entry_name"
         fi
     done
@@ -2678,8 +2830,13 @@ main() {
             select_variant "$2"
             install_action "$3"
             ;;
-        migrate|restore-legacy|refresh)
-            die "This state-conversion action was removed. Use only remove followed by a fresh install from the normal CachyOS boot."
+        refresh)
+            (($# == 2)) || die "Usage: $0 refresh VARIANT"
+            select_variant "$2"
+            refresh_action
+            ;;
+        migrate|restore-legacy)
+            die "This state-conversion action was removed."
             ;;
         status)
             (($# == 2)) || die "Usage: $0 status VARIANT"
