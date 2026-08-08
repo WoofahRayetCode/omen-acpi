@@ -132,9 +132,35 @@ PEGP.OMPR = 3
 PEGP._PS3()
 ```
 
-It does not write `NVDE` and does not alter suspend, S0ix or runtime power
-management. This is the variant confirmed to correct the incomplete S5
-shutdown on the reference machine and is the recommended first test.
+#### Why this works on the reference firmware
+
+On the stock reference firmware, `OMPR` starts at `0x02`, while the real
+`PEGP._PS3()` reaches the physical GPU power-off path only through its existing
+`OMPR == 0x03` branch; that branch calls `PG00._OFF()`. The observed incomplete
+S5 shutdown occurred when this discrete-GPU power-down path was not run.
+
+For `Arg0 == 5` only, the transformation sets `OMPR = 3` and then invokes the
+firmware's existing `PEGP._PS3()` method. The resulting chain is:
+
+```text
+_PTS(5) → OMPR = 3 → PEGP._PS3() → PG00._OFF()
+```
+
+The patch does not call the power resource directly, does not write `NVDE`,
+and does not globally remove the firmware's guards. In particular,
+`PG00._OFF()` returns without powering down the GPU if `NVDE != 1`. On the
+tested environment, with the documented NVIDIA driver loaded, the
+driver-invoked firmware paths were observed setting `NVDE` back to `1`,
+including after resume. That measured premise explains why the minimal variant
+works without forcing `NVDE`; it must not be generalized to another driver,
+firmware or machine. See [`docs/nvde-analysis.md`](docs/nvde-analysis.md) for
+the complete analysis and measurement limits.
+
+S5-only does not modify `WQBZ`. It was physically validated by itself on the
+reference machine and eliminated the previously observed abnormal
+post-shutdown heating, so a WQBZ change was not required for that demonstrated
+S5 result. It does not alter suspend, S0ix or runtime power management and is
+the recommended first test.
 
 ### `combined` — S5 plus WQBZ buffer bounds
 
@@ -142,10 +168,15 @@ shutdown on the reference machine and is the recommended first test.
 - Limine entry: `zz-omen-acpi-combined-test`
 - Root state: `/var/lib/omen-acpi-combined-test`
 
-Combined contains the complete S5 correction and bounds two affected `WQBZ`
-loops before they dereference `BF01[Local5]`. The WQBZ issue is separate from
-shutdown. This variant loaded successfully and removed the observed
-`AE_AML_BUFFER_LIMIT` error on the reference machine, but it still requires
+The stock reference firmware exhibited both incomplete S5 shutdown and a
+`WQBZ` / `AE_AML_BUFFER_LIMIT` error; the project did not treat them as one
+root cause. Combined simply contains the complete S5 correction and,
+separately, bounds two affected `WQBZ` loops before they dereference
+`BF01[Local5]`. S5-only was sufficient for the validated shutdown result
+without changing WQBZ, while Combined also removed the observed buffer error
+on the reference machine. These experiments demonstrate two independent
+correction results; they do not prove that WQBZ could have no indirect
+relationship with other firmware behaviour. Combined still requires
 independent regression testing on every firmware revision—which this project
 does not support.
 
