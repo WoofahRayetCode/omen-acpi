@@ -137,16 +137,17 @@ def boot_fields(item: dict) -> tuple[str, str, list[str]]:
     return options[kernels[0]], command, item["modules"]
 
 
-def active_named(entries: list[dict], name: str) -> list[dict]:
-    def historical(item: dict) -> bool:
-        parent = item["parent"]
-        while parent is not None:
-            ancestor = entries[parent]
-            if "snapshot" in ancestor["title"].lower():
-                return True
-            parent = ancestor["parent"]
-        return False
+def historical(entries: list[dict], item: dict) -> bool:
+    parent = item["parent"]
+    while parent is not None:
+        ancestor = entries[parent]
+        if "snapshot" in ancestor["title"].lower():
+            return True
+        parent = ancestor["parent"]
+    return False
 
+
+def active_named(entries: list[dict], name: str) -> list[dict]:
     matches = [
         item
         for item in entries
@@ -154,7 +155,7 @@ def active_named(entries: list[dict], name: str) -> list[dict]:
             item["title"].lower() == name
             or f"kernel-id={name}" in [value.lower() for value in item["comments"]]
         )
-        and not historical(item)
+        and not historical(entries, item)
     ]
     if not matches:
         return []
@@ -362,14 +363,19 @@ def load_manifest(state: Path, variant: str) -> dict | None:
 
 
 def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespace: tuple[int, int | None]) -> list[dict]:
+    entries = parse_entries(text)
     names = set(variant_names(variant).values())
     candidates = [
         item
-        for item in parse_entries(text)
+        for item in entries
         if item["title"] in names and (item["level"], item["parent"]) == namespace
     ]
     foreign = [
-        item for item in parse_entries(text) if item["title"] in names and item not in candidates
+        item
+        for item in entries
+        if item["title"] in names
+        and item not in candidates
+        and not historical(entries, item)
     ]
     if foreign:
         raise Failure("a reserved OMEN ACPI entry exists outside the active CachyOS namespace")

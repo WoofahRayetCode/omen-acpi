@@ -232,6 +232,24 @@ class KernelEntriesTest(unittest.TestCase):
         ]
         self.assertEqual(stock_after, stock_before)
 
+    def test_historical_snapshot_entries_do_not_block_active_install(self):
+        config = self.esp / "limine.conf"
+        historical = (
+            "////zz-omen-acpi-s5-test\n"
+            "    comment: kernel-id=zz-omen-acpi-s5-test\n"
+            "    protocol: linux\n"
+            "    path: boot():/historical-kernel\n"
+            "    module_path: boot():/historical-initramfs\n"
+        )
+        config.write_text(
+            config.read_text().replace("/User rescue\n", historical + "/User rescue\n")
+        )
+
+        self.sync()
+
+        self.assertIn(historical, config.read_text())
+        self.assertEqual(entries.status(self.esp, self.state, "s5"), 0)
+
     def test_missing_paths_ambiguity_and_modified_owned_entry_fail_closed(self):
         config = self.esp / "limine.conf"
         before = config.read_bytes()
