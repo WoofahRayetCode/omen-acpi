@@ -316,6 +316,7 @@ class KernelEntriesTest(unittest.TestCase):
 
         mock_bin = self.temp / "migration-bin"
         mock_bin.mkdir()
+        shutil.copy2(self.lsinitcpio, mock_bin / "lsinitcpio")
         tool = mock_bin / "limine-entry-tool"
         tool.write_text(
             "#!/usr/bin/python3\n"
