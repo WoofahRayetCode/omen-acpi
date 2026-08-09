@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.3.0 - 2026-08-09
 
 - Supports the primary `linux-cachyos` and `linux-cachyos-lts` Limine entries
   independently, including systems with either kernel or both installed. Each
@@ -14,8 +14,15 @@
   per-kernel status and NVIDIA-module reporting, standard/LTS-aware recovery,
   stricter uninstall orphan checks, and synthetic standard-only, LTS-only,
   dual-kernel, fallback, update and removal coverage.
-- This is a static compatibility extension on `main`; it adds no new hardware
-  validation claim, tag, release or release candidate.
+- Ignores preserved OMEN entries below Limine snapshot hierarchies while still
+  rejecting active duplicates, modified ownership markers and entries in any
+  other foreign namespace.
+- Restores the relevant kernel-message and Combined `BF01`/`WQBZ` diagnostics
+  for the multi-kernel status path.
+- Records a reference-machine Combined boot on `linux-cachyos-lts`
+  `6.18.42-1`, with exact managed AML activation, valid stock recovery and all
+  four standard/LTS S5/Combined entries current. S5 on LTS remains untested in
+  a real boot and is not claimed as runtime-validated.
 - Corrects the documented reference validation environment: CachyOS kernel
   `7.1.5-1-cachyos`, package `linux-cachyos-nvidia-open 7.1.5-1`, NVIDIA Open
   Kernel Module `610.43.03`, `nvidia-utils 610.43.03-1`, and RTX 5070 Mobile.

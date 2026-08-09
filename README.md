@@ -12,7 +12,7 @@ The toolkit builds a replacement DSDT that extends `_PTS`, installs it in a
 untouched.
 
 > **This is not a generic HP OMEN fix.** Only one exact retail model, board and
-> BIOS revision has been validated. Version 2.2.0 adds only an explicit,
+> BIOS revision has been validated. Version 2.3.0 retains the explicit,
 > unsupported opt-in attempt for other readable DMI identities.
 > Read [Risks and limits](#risks-and-limits) before using it.
 
@@ -27,10 +27,11 @@ The maintainer has physically validated only this configuration:
 | Mainboard | `8E35` |
 | BIOS | `F.13` |
 | Distribution | CachyOS |
-| Kernel | `7.1.5-1-cachyos` |
+| Validated baseline kernel | `7.1.5-1-cachyos` |
+| v2.3.0 multi-kernel check | `7.1.6-1-cachyos` installed; `6.18.42-1-cachyos-lts` running |
 | ESP | `/boot` |
 | Secure Boot | disabled |
-| Normal Limine entry | `linux-cachyos` |
+| Normal Limine entries | `linux-cachyos`; `linux-cachyos-lts` |
 
 `OMEN Gaming Laptop 16-ap0xxx` is a DMI identifier shared by a model family.
 It does **not** establish compatibility with every SKU in that family. No other
@@ -204,13 +205,11 @@ AUR helper.
 
 ## Installation
 
-Use only the three published v2.2.0 assets for the published release. The
-standard/LTS multi-kernel lifecycle described below is currently integrated on
-`main` and is not a new Release, tag or hardware-validation claim.
+Use only the three published v2.3.0 assets for the published release.
 
 The S5-only and Combined ACPI transformations remain byte-for-byte equivalent
-to the validated baseline. The new standard/LTS boot lifecycle has static and
-synthetic test coverage but still requires a real boot test on each kernel.
+to the validated baseline. Combined has been booted on the reference machine
+with LTS; S5 on LTS has static and synthetic coverage but no real boot test.
 
 To install the current `main` implementation from source:
 
@@ -221,14 +220,14 @@ sha256sum -c SHA256SUMS
 sudo ./install.sh
 ```
 
-The commands below instead install the unchanged published v2.2.0 release:
+The commands below install the published v2.3.0 release:
 
 ```bash
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.2.0/omen-acpi-toolkit-v2.2.0.tar.gz
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.2.0/omen-acpi-toolkit-v2.2.0.tar.gz.sha256
-sha256sum -c omen-acpi-toolkit-v2.2.0.tar.gz.sha256
-tar xzf omen-acpi-toolkit-v2.2.0.tar.gz
-cd omen-acpi-toolkit-v2.2.0
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.3.0/omen-acpi-toolkit-v2.3.0.tar.gz
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.3.0/omen-acpi-toolkit-v2.3.0.tar.gz.sha256
+sha256sum -c omen-acpi-toolkit-v2.3.0.tar.gz.sha256
+tar xzf omen-acpi-toolkit-v2.3.0.tar.gz
+cd omen-acpi-toolkit-v2.3.0
 sha256sum -c SHA256SUMS
 sudo ./install.sh
 omen-acpi
@@ -448,7 +447,8 @@ the need for manual recovery. An incorrect DSDT can prevent Linux from booting.
 - Only HP OMEN MAX 16-ap0006sl with DMI `OMEN Gaming Laptop 16-ap0xxx`,
   board `8E35` and BIOS `F.13` has been validated.
 - A shared DMI family name is not evidence that another SKU is compatible.
-- The v2.2.0 opt-in authorizes one attempt; it is not compatibility or support.
+- The unvalidated-machine opt-in authorizes one attempt; it is not compatibility
+  or support.
 - Opted-in machines remain subject to every v2.1.11 structural precondition,
   and many will be intentionally rejected.
 - Secure Boot must remain disabled; the toolkit signs nothing.

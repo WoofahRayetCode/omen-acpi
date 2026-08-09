@@ -10,7 +10,7 @@ export PATH="/usr/bin:/bin"
 # Manage separate S5-only and combined Limine entries for the reference or an
 # explicitly opted-in machine. The normal CachyOS entry is never replaced.
 
-readonly VERSION="2.2.0"
+readonly VERSION="2.3.0"
 readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
 readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -2346,8 +2346,37 @@ if stored_path and stored_path.is_file():
 PY
 }
 
+kernel_message_report() {
+    local active_matches_managed="$1" revision_hex kernel_messages wmi_errors
+
+    log ""
+    log "Relevant kernel messages:"
+    revision_hex="${EXPECTED_PATCHED_REVISION#0x}"
+    dmesg 2>/dev/null \
+        | grep -Ei "ACPI.*(override|upgrade)|Override.*DSDT|DSDT.*${revision_hex}|taint" \
+        | tail -n 30 || true
+
+    [[ "$VARIANT" == "combined" ]] || return 0
+    log ""
+    log "Combined-variant BF01 error check:"
+    if (( ! active_matches_managed )); then
+        log "NOT EVALUATED: the managed combined DSDT is not active in this boot"
+    elif ! kernel_messages="$(dmesg 2>/dev/null)"; then
+        log "UNKNOWN: kernel messages could not be read"
+        return 3
+    else
+        wmi_errors="$(grep -Ei 'AE_AML_BUFFER_LIMIT|WQBZ|WQBE' <<<"$kernel_messages" || true)"
+        if [[ -n "$wmi_errors" ]]; then
+            printf '%s\n' "$wmi_errors" | tail -n 30
+            log "FAILED: related firmware errors are present in this boot"
+            return 3
+        fi
+        log "PASS: no related firmware error is present in this boot"
+    fi
+}
+
 status_action() {
-    local esp config work current_assets stale=0 wmi_errors revision_hex kernel_messages
+    local esp config work current_assets stale=0
     local managed_dsdt_hash='' managed_dsdt_path='' kernel_status=0
     local active_matches_managed=0 stored_machine current_machine
 
@@ -2390,6 +2419,11 @@ status_action() {
             kernel_status=$?
         fi
         active_dsdt_report "$STATE_DIR/DSDT.aml" "$EXPECTED_PATCHED_REVISION"
+        if [[ -f /sys/firmware/acpi/tables/DSDT ]] \
+            && cmp -s /sys/firmware/acpi/tables/DSDT "$STATE_DIR/DSDT.aml"; then
+            active_matches_managed=1
+        fi
+        kernel_message_report "$active_matches_managed" || kernel_status=3
         return "$kernel_status"
     fi
 
@@ -2513,32 +2547,7 @@ status_action() {
         active_matches_managed=1
     fi
 
-    log ""
-    log "Relevant kernel messages:"
-    revision_hex="${EXPECTED_PATCHED_REVISION#0x}"
-    dmesg 2>/dev/null \
-        | grep -Ei "ACPI.*(override|upgrade)|Override.*DSDT|DSDT.*${revision_hex}|taint" \
-        | tail -n 30 || true
-
-    if [[ "$VARIANT" == "combined" ]]; then
-        log ""
-        log "Combined-variant BF01 error check:"
-        if (( ! active_matches_managed )); then
-            log "NOT EVALUATED: the managed combined DSDT is not active in this boot"
-        elif ! kernel_messages="$(dmesg 2>/dev/null)"; then
-            log "UNKNOWN: kernel messages could not be read"
-            stale=1
-        else
-            wmi_errors="$(grep -Ei 'AE_AML_BUFFER_LIMIT|WQBZ|WQBE' <<<"$kernel_messages" || true)"
-            if [[ -n "$wmi_errors" ]]; then
-                printf '%s\n' "$wmi_errors" | tail -n 30
-                log "FAILED: related firmware errors are present in this boot"
-                stale=1
-            else
-                log "PASS: no related firmware error is present in this boot"
-            fi
-        fi
-    fi
+    kernel_message_report "$active_matches_managed" || stale=1
 
     if (( stale )); then
         safe_remove_temp_dir "$work"

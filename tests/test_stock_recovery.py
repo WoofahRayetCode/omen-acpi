@@ -248,8 +248,14 @@ class RecoveryTest(unittest.TestCase):
         with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
 
     def test_valid_2_1_10_snapshot_can_be_verified_and_refreshed(self):
-        self.assertEqual(recovery.OWNED_SNAPSHOT_VERSIONS, {"2.1.10", "2.1.11", "2.2.0"})
-        self.assertEqual(recovery.TRUSTED_SNAPSHOT_VERSIONS, {"2.1.11", "2.2.0"})
+        self.assertEqual(
+            recovery.OWNED_SNAPSHOT_VERSIONS,
+            {"2.1.10", "2.1.11", "2.2.0", "2.3.0"},
+        )
+        self.assertEqual(
+            recovery.TRUSTED_SNAPSHOT_VERSIONS,
+            {"2.1.11", "2.2.0", "2.3.0"},
+        )
         self.prepare(); data = self.rewrite_snapshot()
         self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.1.10")
         with self.assertRaises(recovery.Failure): recovery.load_trusted_snapshot()
@@ -265,7 +271,7 @@ class RecoveryTest(unittest.TestCase):
         self.assertIn("RECOVERY_ENTRY\tlegacy-untrusted", output.getvalue())
         config.write_text(self.original)
         recovery.prepare()
-        self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.2.0")
+        self.assertEqual(recovery.load_owned_snapshot()["toolkit_version"], "2.3.0")
         output = io.StringIO()
         with redirect_stdout(output): recovery.status()
         self.assertIn("SNAPSHOT\tvalid", output.getvalue())
@@ -1245,7 +1251,7 @@ class RecoveryTest(unittest.TestCase):
                             config.write_text(self.original)
 
     def test_remove_owned_current_and_legacy_snapshots_with_valid_normal_entry(self):
-        for version in ("2.2.0", "2.1.11", "2.1.10"):
+        for version in ("2.3.0", "2.2.0", "2.1.11", "2.1.10"):
             with self.subTest(version=version):
                 data = self.prepare()
                 if version != recovery.VERSION: data = self.rewrite_snapshot(version)
@@ -1258,7 +1264,7 @@ class RecoveryTest(unittest.TestCase):
                 self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
 
     def test_remove_current_and_legacy_does_not_require_stock_boot_or_current_bios(self):
-        for version in ("2.2.0", "2.1.11", "2.1.10"):
+        for version in ("2.3.0", "2.2.0", "2.1.11", "2.1.10"):
             for boot in ("s5", "combined"):
                 with self.subTest(version=version, boot=boot):
                     data = self.prepare()
@@ -1288,7 +1294,7 @@ class RecoveryTest(unittest.TestCase):
             recovery.status()
         report = output.getvalue()
         for field in ("BOOT\tstock", "DSDT_REVISION\t", "DETECTION\t", "SNAPSHOT\tvalid",
-                      "SNAPSHOT_CREATED\t", "SNAPSHOT_VERSION\t2.2.0", "KERNEL\t",
+                      "SNAPSHOT_CREATED\t", "SNAPSHOT_VERSION\t2.3.0", "KERNEL\t",
                       "MODULES\t2", "HASHES\tverified", "NORMAL_ENTRY\tavailable",
                       "RECOVERY_ENTRY\tmissing", "RECOMMENDATION\t"):
             self.assertIn(field, report)

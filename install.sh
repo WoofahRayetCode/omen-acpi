@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.2.0"
+readonly VERSION="2.3.0"
 readonly TARGET_ROOT="/usr/local/lib/omen-acpi-fix"
 readonly TARGET_BIN="/usr/local/bin/omen-acpi"
 readonly TARGET_DOC="/usr/local/share/doc/omen-acpi-fix"

@@ -1,7 +1,7 @@
 # Preventive stock recovery
 
 This document describes the stock-recovery state machine and transaction rules
-implemented by OMEN ACPI Toolkit v2.2.0. The minimum safe workflow and the
+implemented by OMEN ACPI Toolkit v2.3.0. The minimum safe workflow and the
 irreducible recovery limitation remain in the packaged `README.md`.
 
 ## Components and status

@@ -1,7 +1,7 @@
 # Usage guide
 
 This document is the extended operational reference for OMEN ACPI Toolkit
-v2.2.0. Installation, the minimum safe workflow, stock return,
+v2.3.0. Installation, the minimum safe workflow, stock return,
 recovery limits and removal remain directly in the release `README.md`.
 
 ## Command reference
@@ -74,7 +74,7 @@ The dashboard summarizes machine identity, dependencies, active DSDT, stock
 recovery and both managed variants. A typical clean initial state is:
 
 ```text
-+ OMEN ACPI Toolkit v2.2.0 -----------------------------------------------+
++ OMEN ACPI Toolkit v2.3.0 -----------------------------------------------+
 |                                                                          |
 |  Machine        8E35 / BIOS F.13       READY                             |
 |  Dependencies   All commands available READY                             |
