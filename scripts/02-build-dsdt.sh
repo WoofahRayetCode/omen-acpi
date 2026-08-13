@@ -18,10 +18,10 @@ export PATH="/usr/bin:/bin"
 # bounds the two affected WQBZ loops to the size of BF01; the "s5" variant
 # leaves those loops byte-for-byte unchanged.
 
-EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
-EXPECTED_BOARD="8E35"
-EXPECTED_BIOS="F.13"
-ORIGINAL_OEM_REVISION="0x01072009"
+readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
+readonly EXPECTED_BOARD="8E35"
+readonly EXPECTED_BIOS="F.13"
+readonly ORIGINAL_OEM_REVISION="0x01072009"
 ORIGINAL_DSDT_SHA256=""
 MACHINE_PRODUCT=""
 MACHINE_BOARD=""

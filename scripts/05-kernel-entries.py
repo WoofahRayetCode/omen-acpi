@@ -142,7 +142,7 @@ def boot_fields(item: dict) -> tuple[str, str, list[str]]:
     return options[kernels[0]], command, item["modules"]
 
 
-def historical(entries: list[dict], item: dict) -> bool:
+def is_historical_entry(entries: list[dict], item: dict) -> bool:
     parent = item["parent"]
     while parent is not None:
         ancestor = entries[parent]
@@ -152,7 +152,7 @@ def historical(entries: list[dict], item: dict) -> bool:
     return False
 
 
-def active_named(entries: list[dict], name: str) -> list[dict]:
+def active_entries_named(entries: list[dict], name: str) -> list[dict]:
     matches = [
         item
         for item in entries
@@ -160,7 +160,7 @@ def active_named(entries: list[dict], name: str) -> list[dict]:
             item["title"].lower() == name
             or f"kernel-id={name}" in [value.lower() for value in item["comments"]]
         )
-        and not historical(entries, item)
+        and not is_historical_entry(entries, item)
     ]
     if not matches:
         return []
@@ -174,7 +174,7 @@ def supported_entries(text: str) -> tuple[dict[str, dict], dict[str, dict]]:
     fallback: dict[str, dict] = {}
     namespace: tuple[int, int | None] | None = None
     for name in (*SUPPORTED, *FALLBACKS):
-        matches = active_named(parsed, name)
+        matches = active_entries_named(parsed, name)
         if len(matches) > 1:
             raise Failure(f"active Limine entry {name!r} is duplicated")
         if not matches:
@@ -382,7 +382,7 @@ def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespa
         for item in entries
         if item["title"] in names
         and item not in candidates
-        and not historical(entries, item)
+        and not is_historical_entry(entries, item)
     ]
     if foreign:
         raise Failure("a reserved OMEN ACPI entry exists outside the active CachyOS namespace")
@@ -451,7 +451,7 @@ def rebuild_config(text: str, owned: list[dict], records: dict[str, dict]) -> st
     return result
 
 
-def state_early(state: Path) -> tuple[bytes, str]:
+def load_state_early(state: Path) -> tuple[bytes, str]:
     secure_directory(state)
     early = state / "early.cpio"
     checksum = state / "early.sha256"
@@ -467,7 +467,7 @@ def state_early(state: Path) -> tuple[bytes, str]:
     return content, expected
 
 
-def secure_payload_directories(esp: Path, variant: str, *, create: bool = True) -> Path:
+def managed_payload_directory(esp: Path, variant: str, *, create: bool = True) -> Path:
     root = esp / "omen-acpi"
     if root.exists() or root.is_symlink():
         secure_directory(root)
@@ -485,7 +485,7 @@ def secure_payload_directories(esp: Path, variant: str, *, create: bool = True) 
     return target
 
 
-def unchanged(path: Path, original: str, info: os.stat_result) -> bool:
+def configuration_unchanged(path: Path, original: str, info: os.stat_result) -> bool:
     current = regular(path)
     return (
         (current.st_dev, current.st_ino, current.st_uid, current.st_mode)
@@ -506,8 +506,8 @@ def sync(esp: Path, state: Path, variant: str) -> None:
     namespace = (first["level"], first["parent"])
     manifest = load_manifest(state, variant)
     owned = verify_owned_entries(original, manifest, variant, namespace)
-    early, early_sha = state_early(state)
-    target_dir = secure_payload_directories(esp, variant)
+    early, early_sha = load_state_early(state)
+    target_dir = managed_payload_directory(esp, variant)
     target = target_dir / "early.cpio"
     target_previous: bytes | None = None
     target_mode = 0o600
@@ -538,7 +538,7 @@ def sync(esp: Path, state: Path, variant: str) -> None:
     previous_manifest = manifest_path.read_bytes() if manifest_path.exists() else None
     config_changed = updated != original
     try:
-        if not unchanged(config, original, config_info):
+        if not configuration_unchanged(config, original, config_info):
             raise Failure("Limine configuration changed during reconciliation")
         if config_changed:
             write_atomic(config, updated.encode("utf-8"), stat.S_IMODE(config_info.st_mode))
@@ -591,7 +591,7 @@ def remove(esp: Path, state: Path, variant: str) -> None:
     while len(updated_lines) >= 2 and not updated_lines[-1] and not updated_lines[-2]:
         updated_lines.pop()
     updated = "\n".join(updated_lines) + ("\n" if trailing else "")
-    target = secure_payload_directories(esp, variant, create=False) / "early.cpio"
+    target = managed_payload_directory(esp, variant, create=False) / "early.cpio"
     regular(target)
     if sha256(target) != manifest["early_sha256"]:
         raise Failure("managed ESP early initramfs was modified")
@@ -600,7 +600,7 @@ def remove(esp: Path, state: Path, variant: str) -> None:
         raise Failure(f"unexpected removal staging path: {detached}")
     os.replace(target, detached)
     try:
-        if not unchanged(config, original, info):
+        if not configuration_unchanged(config, original, info):
             raise Failure("Limine configuration changed during removal")
         write_atomic(config, updated.encode("utf-8"), stat.S_IMODE(info.st_mode))
     except Exception:
@@ -677,7 +677,7 @@ def status(esp: Path, state: Path | None, variant: str | None) -> int:
         manifest = load_manifest(state, variant)
         verify_owned_entries(text, manifest, variant, namespace)
         if manifest is not None:
-            _early, state_sha = state_early(state)
+            _early, state_sha = load_state_early(state)
             target, canonical = resolve_limine(manifest["early_path"], esp)
             expected_target = esp / "omen-acpi" / variant / "early.cpio"
             if (
@@ -739,7 +739,7 @@ def main() -> int:
     state = arguments.state.absolute()
     if arguments.action == "sync":
         sync(esp, state, arguments.variant)
-    else:
+    elif arguments.action == "remove":
         remove(esp, state, arguments.variant)
     return 0
 

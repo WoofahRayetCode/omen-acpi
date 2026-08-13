@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refactors the Bash and Python workflow code for procedural readability and
+  verifies equivalent ACPI, CLI, recovery and multi-kernel behaviour.
 - Rewrites the README around the problem, validated scope, safe first run and
   recovery limit, removing repeated implementation detail from the first
   reading path.

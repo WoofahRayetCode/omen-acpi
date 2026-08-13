@@ -10,16 +10,17 @@ export PATH="/usr/bin:/bin"
 # Extracts only the decompiled DSDT source needed by this reproduction.
 # Raw ACPI tables are kept in a private temporary directory and deleted on exit.
 
-EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
-EXPECTED_BOARD="8E35"
-EXPECTED_BIOS="F.13"
+readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
+readonly EXPECTED_BOARD="8E35"
+readonly EXPECTED_BIOS="F.13"
 MACHINE_PRODUCT=""
 MACHINE_BOARD=""
 MACHINE_BIOS=""
 PACKAGE_FORMAT=""
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-boot_probe="$script_dir/00-probe-boot.sh"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+readonly BOOT_PROBE="$SCRIPT_DIR/00-probe-boot.sh"
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -74,9 +75,9 @@ for command in sudo acpidump acpixtract iasl tar sha256sum mktemp install grep r
 done
 
 check_machine
-[[ -x "$boot_probe" ]] || die "Boot-state probe not found: $boot_probe"
-sudo -- "$boot_probe" --require-stock
-probe_output="$(sudo -- "$boot_probe" --env)"
+[[ -x "$BOOT_PROBE" ]] || die "Boot-state probe not found: $BOOT_PROBE"
+sudo -- "$BOOT_PROBE" --require-stock
+probe_output="$(sudo -- "$BOOT_PROBE" --env)"
 original_dsdt_sha="$(awk -F= '$1 == "DSDT_SHA256" { print $2 }' <<<"$probe_output")"
 [[ "$original_dsdt_sha" =~ ^[0-9a-f]{64}$ ]] \
     || die "The original DSDT fingerprint could not be recorded"

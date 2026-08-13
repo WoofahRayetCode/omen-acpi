@@ -314,16 +314,16 @@ def test_engines() -> None:
         os.environ["OMEN_ACPI_TEST_ROOT"] = str(test_root)
         try:
             try:
-                recovery.machine()
+                recovery.require_transform_machine()
             except recovery.Failure:
                 pass
             else:
                 raise AssertionError("Python engine accepted unvalidated DMI without indicator")
             os.environ["OMEN_ACPI_UNVALIDATED_OPT_IN"] = "1"
-            assert recovery.machine() == unvalidated
+            assert recovery.require_transform_machine() == unvalidated
             (dmi / "bios_version").write_text("\n", encoding="utf-8")
             try:
-                recovery.machine()
+                recovery.require_transform_machine()
             except recovery.Failure:
                 pass
             else:

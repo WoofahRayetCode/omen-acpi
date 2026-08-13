@@ -1904,7 +1904,7 @@ manage_menu() {
 }
 
 advanced_menu() {
-    local choice variant
+    local choice
     while true; do
         section "Advanced tools"
         printf '  1. Collect a fresh stock ACPI source\n'

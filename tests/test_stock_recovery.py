@@ -62,7 +62,7 @@ class RecoveryTest(unittest.TestCase):
             "OMEN_ACPI_TEST_LSINITCPIO": str(self.lsinitcpio)
         }, clear=False)
         self.environment.start()
-        self.probe = mock.patch.object(recovery, "probe", return_value={
+        self.probe = mock.patch.object(recovery, "probe_boot_state", return_value={
             "STATE": "stock", "CLEAN": "1", "DSDT_REVISION": recovery.STOCK_REVISION,
             "DSDT_SHA256": "a" * 64,
         })
@@ -96,7 +96,7 @@ class RecoveryTest(unittest.TestCase):
         config.write_text(text)
 
     def rewrite_snapshot(self, version="2.1.10", hostile_module=False):
-        manifest = recovery.STATE() / "manifest.json"
+        manifest = recovery.recovery_state_path() / "manifest.json"
         data = json.loads(manifest.read_text())
         data["toolkit_version"] = version
         if hostile_module:
@@ -104,7 +104,7 @@ class RecoveryTest(unittest.TestCase):
             payload.write_bytes(b"synthetic legacy initramfs with ACPI override")
             item = next(entry for entry in data["payloads"] if entry["name"] == "module-001.bin")
             item["size"] = payload.stat().st_size
-            item["sha256"] = recovery.sha(payload)
+            item["sha256"] = recovery.sha256_file(payload)
         canonical = json.dumps({key: value for key, value in data.items() if key != "snapshot_id"},
                                sort_keys=True, separators=(",", ":")).encode()
         data["snapshot_id"] = recovery.hashlib.sha256(canonical).hexdigest()
@@ -162,7 +162,9 @@ class RecoveryTest(unittest.TestCase):
 
     def test_prepare_rejects_nonstock_states_and_unsupported_machine(self):
         for state in ("s5", "combined", "unknown", "unavailable"):
-            with self.subTest(state=state), mock.patch.object(recovery, "probe", return_value={"STATE": state, "CLEAN": "0"}):
+            with self.subTest(state=state), mock.patch.object(
+                recovery, "probe_boot_state", return_value={"STATE": state, "CLEAN": "0"}
+            ):
                 with self.assertRaises(recovery.Failure): recovery.prepare()
         (self.root / "sys/class/dmi/id/board_name").write_text("WRONG\n")
         with self.assertRaises(recovery.Failure): recovery.prepare()
@@ -184,7 +186,7 @@ class RecoveryTest(unittest.TestCase):
 
     def test_self_consistent_foreign_snapshot_is_rejected(self):
         self.prepare()
-        manifest = recovery.STATE() / "manifest.json"
+        manifest = recovery.recovery_state_path() / "manifest.json"
         data = json.loads(manifest.read_text())
         data["machine"]["product"] = "Another machine"
         canonical = json.dumps(
@@ -219,7 +221,7 @@ class RecoveryTest(unittest.TestCase):
     def test_copy_failure_rolls_back_without_partial_state(self):
         with mock.patch.object(recovery, "copy_stable", side_effect=recovery.Failure("injected copy failure")):
             with self.assertRaises(recovery.Failure): recovery.prepare()
-        self.assertFalse(recovery.STATE().exists())
+        self.assertFalse(recovery.recovery_state_path().exists())
         self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
 
     def test_snapshot_tampering_missing_payload_and_unsafe_state_fail(self):
@@ -230,7 +232,7 @@ class RecoveryTest(unittest.TestCase):
                 original = (payload / name).read_bytes(); (payload / name).write_bytes(original + b"tamper")
                 with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
                 (payload / name).write_bytes(original)
-        manifest = recovery.STATE() / "manifest.json"
+        manifest = recovery.recovery_state_path() / "manifest.json"
         original_manifest = manifest.read_text(); manifest.write_text(original_manifest.replace("F.13", "F.99"))
         with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
         manifest.write_text(original_manifest)
@@ -238,7 +240,7 @@ class RecoveryTest(unittest.TestCase):
         with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
 
     def test_stale_metadata_and_payload_symlink_are_rejected(self):
-        self.prepare(); manifest = recovery.STATE() / "manifest.json"
+        self.prepare(); manifest = recovery.recovery_state_path() / "manifest.json"
         data = json.loads(manifest.read_text()); data["toolkit_version"] = "2.1.9"
         manifest.write_text(json.dumps(data))
         with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
@@ -300,27 +302,27 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(config.read_bytes(), before)
 
     def setUp_snapshot_again_after_tamper(self):
-        shutil.rmtree(recovery.STATE())
+        shutil.rmtree(recovery.recovery_state_path())
         shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
         self.prepare()
 
     def owned_bytes(self):
         payload = self.esp / "omen-acpi-stock-recovery"
         return ((self.esp / "limine.conf").read_bytes(),
-                (recovery.STATE() / "manifest.json").read_bytes(),
+                (recovery.recovery_state_path() / "manifest.json").read_bytes(),
                 {path.name: path.read_bytes() for path in payload.iterdir()})
 
     def assert_owned_bytes(self, expected):
         payload = self.esp / "omen-acpi-stock-recovery"
         self.assertEqual((self.esp / "limine.conf").read_bytes(), expected[0])
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), expected[1])
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), expected[1])
         self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, expected[2])
 
     def assert_no_recovery_transaction_residue(self):
         residues = [
             *self.esp.glob(".omen-acpi-stock-recovery.*"),
             *self.esp.glob(".limine.conf.omen-*"),
-            *recovery.STATE().parent.glob(".omen-acpi-stock-recovery.*"),
+            *recovery.recovery_state_path().parent.glob(".omen-acpi-stock-recovery.*"),
         ]
         self.assertEqual(residues, [])
 
@@ -378,12 +380,12 @@ class RecoveryTest(unittest.TestCase):
             digest = original_copy(source, target, *fingerprint)
             if Path(target).name == "module-001.bin":
                 target.write_bytes(b"STAGED_OVERRIDE")
-                return recovery.sha(target)
+                return recovery.sha256_file(target)
             return digest
 
         with mock.patch.object(recovery, "copy_stable", side_effect=inject_override):
             with self.assertRaises(recovery.Failure): recovery.prepare()
-        self.assertFalse(recovery.path_present(recovery.STATE()))
+        self.assertFalse(recovery.path_present(recovery.recovery_state_path()))
         self.assertFalse(recovery.path_present(self.esp / "omen-acpi-stock-recovery"))
         self.assert_no_recovery_transaction_residue()
 
@@ -401,12 +403,12 @@ class RecoveryTest(unittest.TestCase):
             digest = original_copy(source, target, *fingerprint)
             if Path(target).name == "module-001.bin":
                 target.write_bytes(variant_bytes)
-                return recovery.sha(target)
+                return recovery.sha256_file(target)
             return digest
 
         with mock.patch.object(recovery, "copy_stable", side_effect=inject_variant):
             with self.assertRaises(recovery.Failure): recovery.prepare()
-        self.assertFalse(recovery.path_present(recovery.STATE()))
+        self.assertFalse(recovery.path_present(recovery.recovery_state_path()))
         self.assertFalse(recovery.path_present(self.esp / "omen-acpi-stock-recovery"))
         self.assert_no_recovery_transaction_residue()
 
@@ -415,7 +417,7 @@ class RecoveryTest(unittest.TestCase):
             with self.subTest(side=side):
                 original_copy = recovery.copy_stable
                 injected = False
-                foreign = recovery.STATE() if side == "state" else self.esp / "omen-acpi-stock-recovery"
+                foreign = recovery.recovery_state_path() if side == "state" else self.esp / "omen-acpi-stock-recovery"
 
                 def inject_foreign(source, target, *fingerprint):
                     nonlocal injected
@@ -429,7 +431,7 @@ class RecoveryTest(unittest.TestCase):
                 with mock.patch.object(recovery, "copy_stable", side_effect=inject_foreign):
                     with self.assertRaises(recovery.Failure): recovery.prepare()
                 self.assertEqual((foreign / "foreign.bin").read_bytes(), b"preserve-me")
-                other = self.esp / "omen-acpi-stock-recovery" if side == "state" else recovery.STATE()
+                other = self.esp / "omen-acpi-stock-recovery" if side == "state" else recovery.recovery_state_path()
                 self.assertFalse(recovery.path_present(other))
                 self.assert_no_recovery_transaction_residue()
                 shutil.rmtree(foreign)
@@ -448,11 +450,11 @@ class RecoveryTest(unittest.TestCase):
         with mock.patch.object(recovery, "copy_stable", side_effect=mutate_owned):
             with self.assertRaises(recovery.Failure): recovery.prepare()
         self.assertEqual(payload_file.read_bytes(), b"external-owned-change")
-        self.assertTrue(recovery.path_present(recovery.STATE()))
+        self.assertTrue(recovery.path_present(recovery.recovery_state_path()))
         self.assert_no_recovery_transaction_residue()
 
     def test_prepare_rejects_foreign_state_file_at_final_ownership_check(self):
-        old = self.prepare(); state = recovery.STATE(); foreign = state / "late-foreign.bin"
+        old = self.prepare(); state = recovery.recovery_state_path(); foreign = state / "late-foreign.bin"
         original_check = recovery.require_same_owned_snapshot; injected = False
 
         def inject_before_check(esp, initial):
@@ -468,7 +470,7 @@ class RecoveryTest(unittest.TestCase):
         self.assert_no_recovery_transaction_residue()
 
     def test_prepare_rejects_state_without_payload_before_staging(self):
-        state = recovery.STATE(); state.mkdir(parents=True, mode=0o700)
+        state = recovery.recovery_state_path(); state.mkdir(parents=True, mode=0o700)
         foreign = state / "foreign.bin"; foreign.write_bytes(b"do-not-touch")
         before_state = state.lstat(); before_file = foreign.lstat()
         with self.assertRaises(recovery.Failure): recovery.prepare()
@@ -500,7 +502,7 @@ class RecoveryTest(unittest.TestCase):
         for side in ("state", "payload"):
             for kind in ("file", "symlink", "broken-symlink", "unsafe-directory"):
                 with self.subTest(side=side, kind=kind):
-                    path = recovery.STATE() if side == "state" else self.esp / "omen-acpi-stock-recovery"
+                    path = recovery.recovery_state_path() if side == "state" else self.esp / "omen-acpi-stock-recovery"
                     path.parent.mkdir(parents=True, exist_ok=True)
                     target = self.temp / f"target-{side}-{kind}"
                     if kind == "file":
@@ -543,7 +545,7 @@ class RecoveryTest(unittest.TestCase):
         managed.mkdir(mode=0o700)
         source = self.esp / "initramfs-linux-cachyos.img"
         (managed / "initramfs.img").write_bytes(source.read_bytes())
-        (managed / "initramfs.sha256").write_text(recovery.sha(source) + "\n")
+        (managed / "initramfs.sha256").write_text(recovery.sha256_file(source) + "\n")
         with self.assertRaises(recovery.Failure):
             recovery.prepare()
         self.assertEqual(recovery.load_owned_snapshot()["snapshot_id"], old["snapshot_id"])
@@ -558,9 +560,9 @@ class RecoveryTest(unittest.TestCase):
                 self.assertEqual((self.esp / "omen-acpi-stock-recovery/kernel.bin").read_bytes(), f"new-{point}".encode())
                 recovery.load_owned_snapshot()
                 for old in (*self.esp.glob(".omen-acpi-stock-recovery.old.*"),
-                            *recovery.STATE().parent.glob(".omen-acpi-stock-recovery.old.*")):
+                            *recovery.recovery_state_path().parent.glob(".omen-acpi-stock-recovery.old.*")):
                     shutil.rmtree(old)
-                shutil.rmtree(recovery.STATE()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
+                shutil.rmtree(recovery.recovery_state_path()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
 
     def test_missing_normal_and_missing_snapshot_never_change_limine(self):
         config = self.esp / "limine.conf"
@@ -570,7 +572,7 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(config.read_text(), text)
 
     def test_state_symlink_and_mode_are_rejected(self):
-        state = recovery.STATE(); state.parent.mkdir(parents=True, exist_ok=True)
+        state = recovery.recovery_state_path(); state.parent.mkdir(parents=True, exist_ok=True)
         state.symlink_to(self.temp)
         with self.assertRaises(recovery.Failure): recovery.load_owned_snapshot()
         state.unlink(); state.mkdir(mode=0o755)
@@ -692,11 +694,11 @@ class RecoveryTest(unittest.TestCase):
                      redirect_stderr(errors):
                     recovery.remove()
                 self.assertEqual(config.read_text(), self.original)
-                self.assertFalse(recovery.STATE().exists())
+                self.assertFalse(recovery.recovery_state_path().exists())
                 self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
                 self.assertIn("removal committed", errors.getvalue())
                 for residue in (*self.esp.glob(".omen-acpi-stock-recovery.removed.*"),
-                                *recovery.STATE().parent.glob(".omen-acpi-stock-recovery.removed.*"),
+                                *recovery.recovery_state_path().parent.glob(".omen-acpi-stock-recovery.removed.*"),
                                 *self.esp.glob(".limine.conf.omen-remove-backup.*")):
                     if residue.is_dir(): shutil.rmtree(residue)
                     else: residue.unlink()
@@ -713,7 +715,15 @@ class RecoveryTest(unittest.TestCase):
         data = self.prepare(); proc = self.root / "proc"; proc.mkdir()
         (proc / "cmdline").write_text(f"quiet omen_acpi.stock_recovery={data['snapshot_id']}\n")
         recovery.active()
-        with mock.patch.object(recovery, "probe", return_value={"STATE": "combined", "CLEAN": "0", "DSDT_REVISION": "0x0107200B"}):
+        with mock.patch.object(
+            recovery,
+            "probe_boot_state",
+            return_value={
+                "STATE": "combined",
+                "CLEAN": "0",
+                "DSDT_REVISION": "0x0107200B",
+            },
+        ):
             with self.assertRaises(recovery.Failure): recovery.active()
         (proc / "cmdline").write_text("quiet omen_acpi.stock_recovery=wrong\n")
         with self.assertRaises(recovery.Failure): recovery.active()
@@ -722,7 +732,7 @@ class RecoveryTest(unittest.TestCase):
         self.prepare(); config = self.esp / "limine.conf"
         recovery.remove()
         self.assertEqual(config.read_text(), self.original)
-        self.assertFalse(recovery.STATE().exists())
+        self.assertFalse(recovery.recovery_state_path().exists())
         self.prepare()
         no_normal = self.original[:self.original.index("/Linux-CachyOS")] + "/zz-omen-acpi-s5-test\n protocol: linux\n kernel_path: boot():/x\n module_path: boot():/y\n"
         config.write_text(no_normal)
@@ -733,24 +743,24 @@ class RecoveryTest(unittest.TestCase):
         without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
         config.write_text(without_normal)
         before_config = config.read_bytes()
-        before_manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        before_manifest = (recovery.recovery_state_path() / "manifest.json").read_bytes()
         payload = self.esp / "omen-acpi-stock-recovery"
         before_payload = {path.name: path.read_bytes() for path in payload.iterdir()}
         with self.assertRaises(recovery.Failure): recovery.remove()
         self.assertEqual(config.read_bytes(), before_config)
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), before_manifest)
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), before_manifest)
         self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, before_payload)
 
     def test_remove_requires_unambiguous_normal_entry(self):
         self.prepare(); config = self.esp / "limine.conf"
         duplicate = self.original[self.original.index("/Linux-CachyOS"):self.original.index("/User rescue")]
         config.write_text(self.original + duplicate); before = config.read_bytes()
-        manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        manifest = (recovery.recovery_state_path() / "manifest.json").read_bytes()
         payload = self.esp / "omen-acpi-stock-recovery"
         payload_bytes = {path.name: path.read_bytes() for path in payload.iterdir()}
         with self.assertRaises(recovery.Failure): recovery.remove()
         self.assertEqual(config.read_bytes(), before)
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest)
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), manifest)
         self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, payload_bytes)
 
     def test_remove_requires_normal_entry_with_exact_recovery_entry(self):
@@ -758,19 +768,19 @@ class RecoveryTest(unittest.TestCase):
         without_normal = self.original[:self.original.index("/Linux-CachyOS")] + self.original[self.original.index("/User rescue"):]
         config.write_text(without_normal); recovery.recover()
         before_config = config.read_bytes()
-        before_manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        before_manifest = (recovery.recovery_state_path() / "manifest.json").read_bytes()
         payload = self.esp / "omen-acpi-stock-recovery"
         before_payload = {path.name: path.read_bytes() for path in payload.iterdir()}
         with self.assertRaises(recovery.Failure): recovery.remove()
         self.assertEqual(config.read_bytes(), before_config)
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), before_manifest)
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), before_manifest)
         self.assertEqual({path.name: path.read_bytes() for path in payload.iterdir()}, before_payload)
 
     def test_remove_rejects_every_unusable_normal_payload_without_writes(self):
         config = self.esp / "limine.conf"
 
         def reset_owned():
-            for path in (recovery.STATE(), self.esp / "omen-acpi-stock-recovery",
+            for path in (recovery.recovery_state_path(), self.esp / "omen-acpi-stock-recovery",
                          self.root / "var/lib/omen-acpi-s5-test"):
                 if path.is_symlink() or path.is_file(): path.unlink()
                 elif path.exists(): shutil.rmtree(path)
@@ -824,14 +834,14 @@ class RecoveryTest(unittest.TestCase):
                 elif case == "managed-hash":
                     managed = self.root / "var/lib/omen-acpi-s5-test"; managed.mkdir(mode=0o700)
                     (managed / "initramfs.img").write_bytes(module.read_bytes())
-                    (managed / "initramfs.sha256").write_text(recovery.sha(module) + "\n")
+                    (managed / "initramfs.sha256").write_text(recovery.sha256_file(module) + "\n")
                 with self.assertRaises(recovery.Failure): recovery.remove()
                 self.assert_owned_bytes(expected)
 
     def test_remove_detects_normal_payload_change_during_validation(self):
         self.prepare(); expected = self.owned_bytes()
         module = self.esp / "initramfs-linux-cachyos.img"
-        original_sha = recovery.sha
+        original_sha = recovery.sha256_file
         changed = False
 
         def change_after_hash(path):
@@ -842,7 +852,7 @@ class RecoveryTest(unittest.TestCase):
                 module.write_bytes(module.read_bytes() + b"changed")
             return digest
 
-        with mock.patch.object(recovery, "sha", side_effect=change_after_hash):
+        with mock.patch.object(recovery, "sha256_file", side_effect=change_after_hash):
             with self.assertRaises(recovery.Failure): recovery.remove()
         self.assert_owned_bytes(expected)
 
@@ -877,7 +887,7 @@ class RecoveryTest(unittest.TestCase):
                         calls += 1
                         if calls == injection_call:
                             if component == "state-extra":
-                                (recovery.STATE() / "foreign.bin").write_bytes(b"foreign-state")
+                                (recovery.recovery_state_path() / "foreign.bin").write_bytes(b"foreign-state")
                             else:
                                 (self.esp / "omen-acpi-stock-recovery/module-001.bin").write_bytes(
                                     b"foreign-payload"
@@ -889,14 +899,14 @@ class RecoveryTest(unittest.TestCase):
                         with self.assertRaises(recovery.Failure): recovery.remove()
                     self.assertEqual(config.read_bytes(), config_before)
                     if component == "state-extra":
-                        self.assertEqual((recovery.STATE() / "foreign.bin").read_bytes(), b"foreign-state")
+                        self.assertEqual((recovery.recovery_state_path() / "foreign.bin").read_bytes(), b"foreign-state")
                     else:
                         self.assertEqual(
                             (self.esp / "omen-acpi-stock-recovery/module-001.bin").read_bytes(),
                             b"foreign-payload"
                         )
                     self.assert_no_recovery_transaction_residue()
-                    shutil.rmtree(recovery.STATE()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
+                    shutil.rmtree(recovery.recovery_state_path()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
 
     def test_prepare_old_and_remove_detached_destinations_are_never_replaced(self):
         kinds = ("file", "directory", "symlink", "broken-symlink")
@@ -930,7 +940,7 @@ class RecoveryTest(unittest.TestCase):
                     destination = (
                         self.esp / f".omen-acpi-stock-recovery.old.{os.getpid()}"
                         if destination_kind == "old-payload" else
-                        recovery.STATE().parent / f".omen-acpi-stock-recovery.old.{os.getpid()}"
+                        recovery.recovery_state_path().parent / f".omen-acpi-stock-recovery.old.{os.getpid()}"
                     )
                     target = occupy(destination, kind); before = occupant_signature(destination)
                     with self.assertRaises(recovery.Failure): recovery.prepare()
@@ -938,7 +948,7 @@ class RecoveryTest(unittest.TestCase):
                     self.assert_owned_bytes(expected)
                     remove_occupant(destination, target)
                     self.assert_no_recovery_transaction_residue()
-                    shutil.rmtree(recovery.STATE()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
+                    shutil.rmtree(recovery.recovery_state_path()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
 
         for destination_kind in ("removed-payload", "removed-state"):
             for kind in kinds:
@@ -947,7 +957,7 @@ class RecoveryTest(unittest.TestCase):
                     destination = (
                         self.esp / f".omen-acpi-stock-recovery.removed.{os.getpid()}"
                         if destination_kind == "removed-payload" else
-                        recovery.STATE().parent / f".omen-acpi-stock-recovery.removed.{os.getpid()}"
+                        recovery.recovery_state_path().parent / f".omen-acpi-stock-recovery.removed.{os.getpid()}"
                     )
                     target = occupy(destination, kind); before = occupant_signature(destination)
                     with self.assertRaises(recovery.Failure): recovery.remove()
@@ -955,7 +965,7 @@ class RecoveryTest(unittest.TestCase):
                     self.assert_owned_bytes(expected)
                     remove_occupant(destination, target)
                     self.assert_no_recovery_transaction_residue()
-                    shutil.rmtree(recovery.STATE()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
+                    shutil.rmtree(recovery.recovery_state_path()); shutil.rmtree(self.esp / "omen-acpi-stock-recovery")
 
     def test_recover_reloads_trusted_snapshot_before_configuration_commit(self):
         self.prepare(); config = self.esp / "limine.conf"
@@ -984,7 +994,7 @@ class RecoveryTest(unittest.TestCase):
         without_normal = (self.original[:self.original.index("/Linux-CachyOS")]
                           + self.original[self.original.index("/User rescue"):])
         config.write_text(without_normal)
-        manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+        manifest_before = (recovery.recovery_state_path() / "manifest.json").read_bytes()
         payload_root = self.esp / "omen-acpi-stock-recovery"
         payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
         external = without_normal.encode() + b"# external change during snapshot reload\n"
@@ -1005,7 +1015,7 @@ class RecoveryTest(unittest.TestCase):
                 recovery.recover()
         self.assertEqual(config.read_bytes(), external)
         self.assertNotIn(recovery.ENTRY, config.read_text())
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest_before)
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), manifest_before)
         self.assertEqual({path.name: path.read_bytes() for path in payload_root.iterdir()},
                          payload_before)
         self.assert_no_recovery_transaction_residue()
@@ -1015,7 +1025,7 @@ class RecoveryTest(unittest.TestCase):
         without_normal = (self.original[:self.original.index("/Linux-CachyOS")]
                           + self.original[self.original.index("/User rescue"):])
         config.write_text(without_normal); config_before = config.read_bytes()
-        manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+        manifest_before = (recovery.recovery_state_path() / "manifest.json").read_bytes()
         payload_root = self.esp / "omen-acpi-stock-recovery"
         payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
         changed_payload = payload_root / "module-001.bin"
@@ -1032,7 +1042,7 @@ class RecoveryTest(unittest.TestCase):
                 recovery.recover()
         self.assertEqual(config.read_bytes(), config_before)
         self.assertNotIn(recovery.ENTRY, config.read_text())
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest_before)
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), manifest_before)
         self.assertEqual(changed_payload.read_bytes(), external_payload)
         for name, content in payload_before.items():
             if name != changed_payload.name:
@@ -1042,7 +1052,7 @@ class RecoveryTest(unittest.TestCase):
     def test_remove_rechecks_config_after_slow_snapshot_review(self):
         data = self.prepare(); config = self.esp / "limine.conf"
         config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
-        manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+        manifest_before = (recovery.recovery_state_path() / "manifest.json").read_bytes()
         payload_root = self.esp / "omen-acpi-stock-recovery"
         payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
         external = config.read_bytes() + b"# external change during snapshot review\n"
@@ -1068,7 +1078,7 @@ class RecoveryTest(unittest.TestCase):
         cleanup_tree.assert_not_called()
         cleanup_file.assert_not_called()
         self.assertEqual(config.read_bytes(), external)
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), manifest_before)
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), manifest_before)
         self.assertEqual({path.name: path.read_bytes() for path in payload_root.iterdir()},
                          payload_before)
         self.assert_no_recovery_transaction_residue()
@@ -1080,7 +1090,7 @@ class RecoveryTest(unittest.TestCase):
                 data = self.prepare(); config = self.esp / "limine.conf"
                 config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
                 config_before = config.read_bytes()
-                manifest_before = (recovery.STATE() / "manifest.json").read_bytes()
+                manifest_before = (recovery.recovery_state_path() / "manifest.json").read_bytes()
                 payload_root = self.esp / "omen-acpi-stock-recovery"
                 payload_before = {path.name: path.read_bytes() for path in payload_root.iterdir()}
                 module = self.esp / "initramfs-linux-cachyos.img"
@@ -1139,14 +1149,14 @@ class RecoveryTest(unittest.TestCase):
                     cleanup_tree.assert_not_called()
                     cleanup_file.assert_not_called()
                     self.assertEqual(config.read_bytes(), config_before)
-                    self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(),
+                    self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(),
                                      manifest_before)
                     self.assertEqual({path.name: path.read_bytes() for path in payload_root.iterdir()},
                                      payload_before)
                     self.assert_no_recovery_transaction_residue()
                 finally:
-                    if recovery.path_present(recovery.STATE()):
-                        shutil.rmtree(recovery.STATE())
+                    if recovery.path_present(recovery.recovery_state_path()):
+                        shutil.rmtree(recovery.recovery_state_path())
                     if recovery.path_present(payload_root):
                         shutil.rmtree(payload_root)
                     if recovery.path_present(module):
@@ -1233,14 +1243,14 @@ class RecoveryTest(unittest.TestCase):
                                 remove_occupant(destination, target)
                             elif target is not None and target.exists():
                                 target.unlink() if target.is_file() else shutil.rmtree(target)
-                            if recovery.path_present(recovery.STATE()):
-                                shutil.rmtree(recovery.STATE())
+                            if recovery.path_present(recovery.recovery_state_path()):
+                                shutil.rmtree(recovery.recovery_state_path())
                             payload_root = self.esp / "omen-acpi-stock-recovery"
                             if recovery.path_present(payload_root):
                                 shutil.rmtree(payload_root)
                             for residue in (*self.esp.glob(".limine.conf.omen-*"),
                                             *self.esp.glob(".omen-acpi-stock-recovery.*"),
-                                            *recovery.STATE().parent.glob(
+                                            *recovery.recovery_state_path().parent.glob(
                                                 ".omen-acpi-stock-recovery.*")):
                                 if residue.is_symlink() or residue.is_file():
                                     residue.unlink()
@@ -1260,7 +1270,7 @@ class RecoveryTest(unittest.TestCase):
                 )
                 recovery.remove()
                 self.assertEqual((self.esp / "limine.conf").read_text(), self.original)
-                self.assertFalse(recovery.STATE().exists())
+                self.assertFalse(recovery.recovery_state_path().exists())
                 self.assertFalse((self.esp / "omen-acpi-stock-recovery").exists())
 
     def test_remove_current_and_legacy_does_not_require_stock_boot_or_current_bios(self):
@@ -1272,8 +1282,8 @@ class RecoveryTest(unittest.TestCase):
                     config = self.esp / "limine.conf"
                     config.write_text(self.original + "\n" + recovery.owned_block(data) + "\n")
                     (self.root / "sys/class/dmi/id/bios_version").write_text("F.99\n")
-                    with mock.patch.object(recovery, "machine") as machine_check, \
-                         mock.patch.object(recovery, "probe", return_value={
+                    with mock.patch.object(recovery, "require_transform_machine") as machine_check, \
+                         mock.patch.object(recovery, "probe_boot_state", return_value={
                              "STATE": boot, "CLEAN": "0", "DSDT_REVISION": "changed"
                          }) as boot_probe:
                         recovery.remove()
@@ -1285,7 +1295,7 @@ class RecoveryTest(unittest.TestCase):
     def test_detailed_status_is_read_only_and_reports_required_fields(self):
         self.prepare()
         before_config = (self.esp / "limine.conf").read_bytes()
-        before_manifest = (recovery.STATE() / "manifest.json").read_bytes()
+        before_manifest = (recovery.recovery_state_path() / "manifest.json").read_bytes()
         lock = self.root / "run/omen-acpi-fix/manager.lock"
         if lock.exists():
             lock.unlink()
@@ -1299,7 +1309,7 @@ class RecoveryTest(unittest.TestCase):
                       "RECOVERY_ENTRY\tmissing", "RECOMMENDATION\t"):
             self.assertIn(field, report)
         self.assertEqual((self.esp / "limine.conf").read_bytes(), before_config)
-        self.assertEqual((recovery.STATE() / "manifest.json").read_bytes(), before_manifest)
+        self.assertEqual((recovery.recovery_state_path() / "manifest.json").read_bytes(), before_manifest)
         self.assertFalse(lock.exists())
 
     def test_status_contexts_are_fail_closed(self):

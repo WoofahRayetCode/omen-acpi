@@ -52,11 +52,15 @@ def rooted(path: str) -> Path:
     return Path(path)
 
 
-STATE = lambda: rooted("/var/lib/omen-acpi-stock-recovery")
-LOCK = lambda: rooted("/run/omen-acpi-fix/manager.lock")
+def recovery_state_path() -> Path:
+    return rooted("/var/lib/omen-acpi-stock-recovery")
 
 
-def sha(path: Path) -> str:
+def manager_lock_path() -> Path:
+    return rooted("/run/omen-acpi-fix/manager.lock")
+
+
+def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb", buffering=0) as stream:
         while chunk := stream.read(1024 * 1024):
@@ -64,7 +68,9 @@ def sha(path: Path) -> str:
     return digest.hexdigest()
 
 
-def regular(path: Path, *, owner: int | None = None, links: int = 1) -> os.stat_result:
+def require_regular_file(
+    path: Path, *, owner: int | None = None, links: int = 1
+) -> os.stat_result:
     try:
         before = path.lstat()
     except OSError as error:
@@ -78,7 +84,7 @@ def regular(path: Path, *, owner: int | None = None, links: int = 1) -> os.stat_
     return before
 
 
-def secure_dir(path: Path, *, mode: int = 0o700) -> None:
+def require_secure_directory(path: Path, *, mode: int = 0o700) -> None:
     try:
         info = path.lstat()
     except OSError as error:
@@ -91,7 +97,7 @@ def secure_dir(path: Path, *, mode: int = 0o700) -> None:
 
 
 def directory_identity(path: Path, *, mode: int = 0o700) -> tuple[int, ...]:
-    secure_dir(path, mode=mode)
+    require_secure_directory(path, mode=mode)
     info = path.lstat()
     return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_nlink,
             info.st_size, info.st_mtime_ns, info.st_ctime_ns, stat.S_IMODE(info.st_mode))
@@ -147,7 +153,7 @@ def rename_noreplace(source: Path, target: Path) -> None:
 
 
 def acquire_lock():
-    path = LOCK()
+    path = manager_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.parent.is_symlink():
         raise Failure("unsafe lock directory")
@@ -168,7 +174,7 @@ def read_machine() -> tuple[str, str, str]:
     return result  # type: ignore[return-value]
 
 
-def machine() -> tuple[str, str, str]:
+def require_transform_machine() -> tuple[str, str, str]:
     result = read_machine()
     if result != EXPECTED and os.environ.get("OMEN_ACPI_UNVALIDATED_OPT_IN") != "1":
         raise Failure(f"unsupported machine: product={result[0]!r}, board={result[1]!r}, BIOS={result[2]!r}")
@@ -177,7 +183,7 @@ def machine() -> tuple[str, str, str]:
 
 # Limine and normal-entry parsing
 
-def esp_path() -> Path:
+def resolve_esp_path() -> Path:
     override = os.environ.get("OMEN_ACPI_TEST_ESP")
     if override:
         esp = Path(override).resolve()
@@ -207,9 +213,9 @@ def esp_path() -> Path:
         targets = mount.stdout.splitlines()
         if not targets or Path(targets[0]).resolve() != esp:
             raise Failure("the Limine directory is not a distinct mounted filesystem")
-    secure_dir(esp, mode=stat.S_IMODE(esp.stat().st_mode))
+    require_secure_directory(esp, mode=stat.S_IMODE(esp.stat().st_mode))
     config = esp / "limine.conf"
-    regular(config)
+    require_regular_file(config)
     return esp
 
 
@@ -217,7 +223,7 @@ ENTRY_RE = re.compile(r"^\s*(/+)(\+?)([^/].*)$")
 OPTION_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$")
 
 
-def entries(text: str) -> list[dict]:
+def parse_limine_entries(text: str) -> list[dict]:
     lines = text.splitlines()
     found: list[dict] = []
     stack: list[int] = []
@@ -267,7 +273,7 @@ def boot_fields(item: dict) -> tuple[str, str, list[str]]:
 
 
 def normal_entries(text: str) -> list[dict]:
-    found = entries(text)
+    found = parse_limine_entries(text)
     candidates = []
     namespace = None
 
@@ -356,7 +362,7 @@ def normal_entry(text: str, *, required: bool = True) -> dict | None:
     return valid[0]
 
 
-def limine_local(value: str, esp: Path) -> tuple[Path, str]:
+def resolve_limine_path(value: str, esp: Path) -> tuple[Path, str]:
     value = value.split("#", 1)[0].strip()
     if value.startswith("$"):
         value = value[1:]
@@ -378,7 +384,7 @@ def limine_local(value: str, esp: Path) -> tuple[Path, str]:
     return candidate, "boot():/" + pure.as_posix()
 
 
-def probe() -> dict[str, str]:
+def probe_boot_state() -> dict[str, str]:
     script = Path(__file__).with_name("00-probe-boot.sh")
     result = subprocess.run([str(script), "--env"], text=True, capture_output=True, env=os.environ)
     if result.returncode:
@@ -389,7 +395,7 @@ def probe() -> dict[str, str]:
 
 def copy_stable(source: Path, target: Path,
                 expected: tuple[tuple[int, int, int, int, int, int], str]) -> str:
-    before = regular(source)
+    before = require_regular_file(source)
     before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
                        before.st_ctime_ns, stat.S_IMODE(before.st_mode))
     if before_identity != expected[0]:
@@ -398,13 +404,13 @@ def copy_stable(source: Path, target: Path,
         shutil.copyfileobj(incoming, outgoing, 1024 * 1024)
         outgoing.flush()
         os.fsync(outgoing.fileno())
-    after = regular(source)
+    after = require_regular_file(source)
     after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
                       after.st_ctime_ns, stat.S_IMODE(after.st_mode))
     if before_identity != after_identity:
         raise Failure(f"source changed during copy: {source}")
-    source_digest = sha(source)
-    target_digest = sha(target)
+    source_digest = sha256_file(source)
+    target_digest = sha256_file(target)
     if source_digest != expected[1]:
         raise Failure(f"source digest changed after validation: {source}")
     if target_digest != expected[1]:
@@ -414,9 +420,9 @@ def copy_stable(source: Path, target: Path,
 
 def file_identity(path: Path, expected: bytes | None = None) -> tuple[int, int, int, int, int, int]:
     """Return an ESP-friendly identity and optionally require exact bytes."""
-    info = regular(path)
+    info = require_regular_file(path)
     content = path.read_bytes()
-    after = regular(path)
+    after = require_regular_file(path)
     identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
                 info.st_ctime_ns, stat.S_IMODE(info.st_mode))
     if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
@@ -464,7 +470,7 @@ def write_exclusive(path: Path, content: bytes, mode: int) -> tuple[int, int, in
 
 def inspect_source_initramfs(path: Path, managed_hashes: set[str]) -> None:
     """Reject ACPI overrides and any payload identical to a managed variant."""
-    if sha(path) in managed_hashes:
+    if sha256_file(path) in managed_hashes:
         raise Failure(f"managed variant initramfs was renamed as a stock module: {path}")
     command = os.environ.get("OMEN_ACPI_TEST_LSINITCPIO", "lsinitcpio")
     try:
@@ -494,11 +500,11 @@ def path_present(path: Path) -> bool:
 
 def stable_fingerprint(path: Path) -> tuple[tuple[int, int, int, int, int, int], str]:
     """Hash one regular single-link file while proving stable identity."""
-    before = regular(path)
+    before = require_regular_file(path)
     identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
                 before.st_ctime_ns, stat.S_IMODE(before.st_mode))
-    digest = sha(path)
-    after = regular(path)
+    digest = sha256_file(path)
+    after = require_regular_file(path)
     after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
                       after.st_ctime_ns, stat.S_IMODE(after.st_mode))
     if identity != after_identity:
@@ -513,8 +519,8 @@ def validate_normal_source(text: str, esp: Path, source: dict | None = None) -> 
     kernel_value, command, modules = boot_fields(source)
     if any(marker in command for marker in VARIANT_MARKERS) or "omen_acpi.stock_recovery=" in command:
         raise Failure("normal entry contains an OMEN ACPI marker")
-    kernel, kernel_canonical = limine_local(kernel_value, esp)
-    module_pairs = [limine_local(item, esp) for item in modules]
+    kernel, kernel_canonical = resolve_limine_path(kernel_value, esp)
+    module_pairs = [resolve_limine_path(item, esp) for item in modules]
     forbidden = ("omen-acpi-s5", "omen-acpi-combined", "DSDT.aml")
     for local, canonical in [(kernel, kernel_canonical), *module_pairs]:
         if any(token.lower() in canonical.lower() for token in forbidden):
@@ -549,10 +555,10 @@ def require_same_normal_source(text: str, esp: Path, initial: dict) -> dict:
 def require_normal_source_identities(esp: Path, initial: dict) -> None:
     """Quick final boundary check of identities already content-validated."""
     for canonical, expected_identity, _digest in initial["fingerprints"]:
-        path, confirmed = limine_local(canonical, esp)
+        path, confirmed = resolve_limine_path(canonical, esp)
         if confirmed != canonical:
             raise Failure("normal CachyOS path changed after validation")
-        info = regular(path)
+        info = require_regular_file(path)
         identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
                     info.st_ctime_ns, stat.S_IMODE(info.st_mode))
         if identity != expected_identity:
@@ -565,15 +571,15 @@ def managed_initramfs_hashes() -> set[str]:
         state = rooted(f"/var/lib/omen-acpi-{variant}-test")
         if not state.exists() and not state.is_symlink():
             continue
-        secure_dir(state)
+        require_secure_directory(state)
         checksum = state / "initramfs.sha256"
         payload = state / "initramfs.img"
-        regular(checksum, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
-        regular(payload, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
+        require_regular_file(checksum, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
+        require_regular_file(payload, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
         value = checksum.read_text(encoding="ascii", errors="strict").strip()
         if not re.fullmatch(r"[0-9a-f]{64}", value):
             raise Failure(f"managed variant contains an invalid initramfs checksum: {checksum}")
-        if sha(payload) != value:
+        if sha256_file(payload) != value:
             raise Failure(f"managed variant initramfs checksum does not match its payload: {payload}")
         hashes.add(value)
     return hashes
@@ -616,12 +622,12 @@ def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = No
                         payload_path: Path | None = None,
                         require_current_machine: bool = True) -> dict:
     """Verify managed ownership, schema and integrity, but not boot trust."""
-    state = state_path if state_path is not None else STATE()
-    secure_dir(state)
+    state = state_path if state_path is not None else recovery_state_path()
+    require_secure_directory(state)
     manifest_path = state / "manifest.json"
     if {item.name for item in state.iterdir()} != {"manifest.json"}:
         raise Failure("recovery state contains unexpected files")
-    regular(manifest_path, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
+    require_regular_file(manifest_path, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -642,13 +648,13 @@ def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = No
         raise Failure("recovery snapshot belongs to a different machine or BIOS")
     if require_current_machine and snapshot_machine != read_machine():
         raise Failure("recovery snapshot belongs to a different machine or BIOS")
-    canonical_payload, canonical = limine_local(
-        data["payload_root"], esp if esp is not None else esp_path()
+    canonical_payload, canonical = resolve_limine_path(
+        data["payload_root"], esp if esp is not None else resolve_esp_path()
     )
     if canonical != data["payload_root"] or canonical_payload.name != "omen-acpi-stock-recovery":
         raise Failure("invalid recovery payload root")
     payload_root = payload_path if payload_path is not None else canonical_payload
-    secure_dir(payload_root)
+    require_secure_directory(payload_root)
     expected_names = {item["name"] for item in data["payloads"]}
     actual_names = {item.name for item in payload_root.iterdir()}
     if actual_names != expected_names:
@@ -657,8 +663,8 @@ def load_owned_snapshot(esp: Path | None = None, *, state_path: Path | None = No
         if not re.fullmatch(r"(?:kernel|module-[0-9]{3})\.bin", item["name"]):
             raise Failure("invalid deterministic payload name")
         path = payload_root / item["name"]
-        regular(path)
-        if path.stat().st_size != item["size"] or sha(path) != item["sha256"]:
+        require_regular_file(path)
+        if path.stat().st_size != item["size"] or sha256_file(path) != item["sha256"]:
             raise Failure(f"recovery payload was modified: {item['name']}")
     canonical_json = json.dumps({key: value for key, value in data.items() if key != "snapshot_id"}, sort_keys=True, separators=(",", ":")).encode()
     if hashlib.sha256(canonical_json).hexdigest() != data["snapshot_id"]:
@@ -670,7 +676,7 @@ def load_owned_snapshot_record(esp: Path, *, state_path: Path | None = None,
                                payload_path: Path | None = None,
                                require_current_machine: bool = True) -> tuple[dict, tuple]:
     """Load twice and bind an owned snapshot to exact directory/file identities."""
-    state = state_path if state_path is not None else STATE()
+    state = state_path if state_path is not None else recovery_state_path()
     payload = payload_path if payload_path is not None else esp / "omen-acpi-stock-recovery"
     first = load_owned_snapshot(
         esp, state_path=state, payload_path=payload,
@@ -719,7 +725,7 @@ def load_trusted_snapshot_record(esp: Path) -> tuple[dict, tuple]:
 def existing_owned_snapshot(esp: Path, *, require_current_machine: bool = True) -> dict | None:
     """Require the reserved payload/state paths to be absent or a verified pair."""
     payload = esp / "omen-acpi-stock-recovery"
-    state = STATE()
+    state = recovery_state_path()
     payload_present = path_present(payload)
     state_present = path_present(state)
     if not payload_present and not state_present:
@@ -757,13 +763,13 @@ def require_same_owned_snapshot(esp: Path, initial: tuple[dict, tuple] | None, *
 # Snapshot lifecycle
 
 def prepare() -> None:
-    product, board, bios = machine()
-    probe_state = probe()
+    product, board, bios = require_transform_machine()
+    probe_state = probe_boot_state()
     if probe_state.get("STATE") != "stock" or probe_state.get("CLEAN") != "1":
         raise Failure(f"snapshot preparation requires a clean verified stock boot; current state is {probe_state.get('STATE', 'unavailable')}")
-    esp = esp_path()
+    esp = resolve_esp_path()
     config = esp / "limine.conf"
-    config_before = regular(config)
+    config_before = require_regular_file(config)
     text = config.read_text(encoding="utf-8", errors="strict")
     source_data = validate_normal_source(text, esp)
     source = source_data["entry"]
@@ -773,14 +779,15 @@ def prepare() -> None:
     module_pairs = source_data["modules"]
     payload = esp / "omen-acpi-stock-recovery"
     initial_snapshot = existing_owned_snapshot_record(esp)
-    state_dir = STATE()
+    state_dir = recovery_state_path()
     state_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     old_payload = esp / f".omen-acpi-stock-recovery.old.{os.getpid()}"
     old_state = state_dir.parent / f".omen-acpi-stock-recovery.old.{os.getpid()}"
     require_absent(old_payload, old_state)
     payload_stage = Path(tempfile.mkdtemp(prefix=".omen-acpi-stock-recovery.", dir=esp))
     state_stage = Path(tempfile.mkdtemp(prefix=".omen-acpi-stock-recovery.", dir=state_dir.parent))
-    os.chmod(payload_stage, 0o700); os.chmod(state_stage, 0o700)
+    os.chmod(payload_stage, 0o700)
+    os.chmod(state_stage, 0o700)
     activated_payload = activated_state = False
     try:
         payloads = []
@@ -823,7 +830,10 @@ def prepare() -> None:
         data["snapshot_id"] = hashlib.sha256(canonical_json).hexdigest()
         manifest = state_stage / "manifest.json"
         manifest.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        os.chmod(manifest, 0o600); fsync_file(manifest); fsync_dir(payload_stage); fsync_dir(state_stage)
+        os.chmod(manifest, 0o600)
+        fsync_file(manifest)
+        fsync_dir(payload_stage)
+        fsync_dir(state_stage)
         manifest_fingerprint = stable_fingerprint(manifest)
 
         if file_identity(config, text.encode("utf-8")) != (
@@ -839,18 +849,23 @@ def prepare() -> None:
         if {item.name for item in state_stage.iterdir()} != {"manifest.json"} \
                 or stable_fingerprint(manifest) != manifest_fingerprint:
             raise Failure("staged recovery manifest changed before activation")
-        directory_identity(payload_stage); directory_identity(state_stage)
+        directory_identity(payload_stage)
+        directory_identity(state_stage)
         require_absent(old_payload, old_state)
         require_same_owned_snapshot(esp, initial_snapshot)
 
         if initial_snapshot is not None:
             rename_noreplace(payload, old_payload)
-        rename_noreplace(payload_stage, payload); activated_payload = True; fsync_dir(esp)
+        rename_noreplace(payload_stage, payload)
+        activated_payload = True
+        fsync_dir(esp)
         if os.environ.get("OMEN_ACPI_TEST_FAIL_AFTER_PAYLOAD") == "1":
             raise Failure("simulated interruption after payload activation")
         if initial_snapshot is not None:
             rename_noreplace(state_dir, old_state)
-        rename_noreplace(state_stage, state_dir); activated_state = True; fsync_dir(state_dir.parent)
+        rename_noreplace(state_stage, state_dir)
+        activated_state = True
+        fsync_dir(state_dir.parent)
         load_owned_snapshot_record(esp)
         # The new pair is committed here. Cleanup is non-essential and must
         # never roll it back after either old component has been deleted.
@@ -892,8 +907,11 @@ def owned_block(data: dict) -> str:
 
 
 def recover() -> None:
-    read_machine(); esp = esp_path(); config = esp / "limine.conf"
-    original_bytes = config.read_bytes(); before_identity = file_identity(config, original_bytes)
+    read_machine()
+    esp = resolve_esp_path()
+    config = esp / "limine.conf"
+    original_bytes = config.read_bytes()
+    before_identity = file_identity(config, original_bytes)
     text = original_bytes.decode("utf-8", errors="strict")
     normal = normal_entry(text, required=False)
     if normal is not None:
@@ -902,7 +920,7 @@ def recover() -> None:
         return
     initial_snapshot = load_trusted_snapshot_record(esp)
     data = initial_snapshot[0]
-    parsed = entries(text)
+    parsed = parse_limine_entries(text)
     reserved = [item for item in parsed if item["title"] == ENTRY]
     if len(reserved) > 1:
         raise Failure("multiple reserved recovery entries exist")
@@ -937,7 +955,9 @@ def recover() -> None:
         # hashing or other long-running check may follow it.
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed after snapshot verification")
-        os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
+        os.replace(stage, config)
+        config_replaced = True
+        fsync_dir(config.parent)
         stage_identity = None
         installed_identity = file_identity(config, installed_bytes)
         committed_snapshot = load_trusted_snapshot_record(esp)
@@ -975,7 +995,7 @@ def recover() -> None:
 
 
 def active() -> None:
-    state = probe()
+    state = probe_boot_state()
     if state.get("STATE") != "stock" or state.get("CLEAN") != "1" or state.get("DSDT_REVISION") != STOCK_REVISION:
         raise Failure("stock recovery marker cannot override a non-stock DSDT classification")
     data = load_trusted_snapshot()
@@ -988,8 +1008,10 @@ def active() -> None:
 
 def remove() -> None:
     # Removal remains available after a BIOS change, but ownership remains exact.
-    esp = esp_path(); config = esp / "limine.conf"
-    original_bytes = config.read_bytes(); before_identity = file_identity(config, original_bytes)
+    esp = resolve_esp_path()
+    config = esp / "limine.conf"
+    original_bytes = config.read_bytes()
+    before_identity = file_identity(config, original_bytes)
     text = original_bytes.decode("utf-8", errors="strict")
     try:
         source_data = validate_normal_source(text, esp)
@@ -1003,7 +1025,7 @@ def remove() -> None:
         raise Failure("managed recovery snapshot is missing")
     data = initial_snapshot[0]
     block = owned_block(data)
-    reserved = [item for item in entries(text) if item["title"] == ENTRY]
+    reserved = [item for item in parse_limine_entries(text) if item["title"] == ENTRY]
     if len(reserved) > 1 or text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
         raise Failure("reserved recovery ownership markers are ambiguous")
     if reserved and (BEGIN not in text or text.count(block) != 1):
@@ -1017,9 +1039,9 @@ def remove() -> None:
     installed_bytes = new_text.encode("utf-8")
     stage = config.with_name(f".{config.name}.omen-remove.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-remove-backup.{os.getpid()}")
-    payload, _ = limine_local(data["payload_root"], esp)
+    payload, _ = resolve_limine_path(data["payload_root"], esp)
     detached_payload = payload.with_name(f".{payload.name}.removed.{os.getpid()}")
-    detached_state = STATE().with_name(f".{STATE().name}.removed.{os.getpid()}")
+    detached_state = recovery_state_path().with_name(f".{recovery_state_path().name}.removed.{os.getpid()}")
     require_absent(stage, backup, detached_payload, detached_state)
     config_replaced = False
     removal_committed = False
@@ -1040,7 +1062,9 @@ def remove() -> None:
         # Final immediate configuration check: no long-running work follows.
         if file_identity(config, original_bytes) != before_identity:
             raise Failure("Limine configuration changed before removal commit")
-        os.replace(stage, config); config_replaced = True; fsync_dir(config.parent)
+        os.replace(stage, config)
+        config_replaced = True
+        fsync_dir(config.parent)
         stage_identity = None
         installed_identity = file_identity(config, installed_bytes)
         require_same_owned_snapshot(esp, initial_snapshot, require_current_machine=False)
@@ -1052,7 +1076,7 @@ def remove() -> None:
             raise Failure("Limine configuration changed before recovery detach")
         require_absent(detached_payload, detached_state)
         rename_noreplace(payload, detached_payload)
-        rename_noreplace(STATE(), detached_state)
+        rename_noreplace(recovery_state_path(), detached_state)
         detached_snapshot = load_owned_snapshot_record(
             esp, state_path=detached_state, payload_path=detached_payload,
             require_current_machine=False
@@ -1061,7 +1085,7 @@ def remove() -> None:
                 or detached_snapshot[1][0] != initial_snapshot[1][0] \
                 or detached_snapshot[1][3] != initial_snapshot[1][3]:
             raise Failure("detached recovery snapshot differs from verified ownership")
-        if path_present(payload) or path_present(STATE()):
+        if path_present(payload) or path_present(recovery_state_path()):
             raise Failure("managed recovery state did not detach completely")
         require_same_normal_source(new_text, esp, source_data)
         if file_identity(config, installed_bytes) != installed_identity:
@@ -1110,8 +1134,8 @@ def remove() -> None:
             print(f"WARNING: removal committed; detached cleanup failed: {failure}", file=sys.stderr)
         print("Stock recovery entry, payloads and state removed.")
     except Exception:
-        if path_present(detached_state) and not path_present(STATE()):
-            rename_noreplace(detached_state, STATE())
+        if path_present(detached_state) and not path_present(recovery_state_path()):
+            rename_noreplace(detached_state, recovery_state_path())
         if path_present(detached_payload) and not path_present(payload):
             rename_noreplace(detached_payload, payload)
         if config_replaced and path_present(backup) and backup_identity is not None:
@@ -1142,7 +1166,7 @@ def status() -> None:
     revision = "unavailable"
     detection = "the current ACPI state could not be verified"
     try:
-        current = probe()
+        current = probe_boot_state()
         boot = current.get("STATE", "unavailable")
         if current.get("CLEAN") != "1" and boot not in ("unknown", "unavailable"):
             boot = "modified"
@@ -1159,7 +1183,7 @@ def status() -> None:
     text = ""
     try:
         read_machine()
-        esp = esp_path()
+        esp = resolve_esp_path()
         text = (esp / "limine.conf").read_text(encoding="utf-8", errors="strict")
         try:
             candidates = normal_entries(text)
@@ -1186,7 +1210,7 @@ def status() -> None:
                     normal_state = "unusable"
 
         payload = esp / "omen-acpi-stock-recovery"
-        state_present = path_present(STATE())
+        state_present = path_present(recovery_state_path())
         payload_present = path_present(payload)
         if not state_present and not payload_present:
             snapshot_state = "missing"
@@ -1215,12 +1239,12 @@ def status() -> None:
                     else:
                         sources = [source_data["kernel"], *[item[0] for item in source_data["modules"]]]
                         stored = data["payloads"]
-                        if len(sources) != len(stored) or any(sha(source) != item["sha256"] for source, item in zip(sources, stored)):
+                        if len(sources) != len(stored) or any(sha256_file(source) != item["sha256"] for source, item in zip(sources, stored)):
                             snapshot_state = "stale"
             except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError):
                 snapshot_state = "modified"
 
-        reserved = [item for item in entries(text) if item["title"] == ENTRY]
+        reserved = [item for item in parse_limine_entries(text) if item["title"] == ENTRY]
         if not reserved and BEGIN not in text and END not in text:
             recovery_state = "missing"
         elif len(reserved) != 1 or text.count(BEGIN) != 1 or text.count(END) != 1 or data is None:
@@ -1294,10 +1318,17 @@ def main() -> int:
         status()
         return 0
     if arguments.action == "prepare":
-        machine()
+        require_transform_machine()
     lock = acquire_lock()
     try:
-        globals()[arguments.action]()
+        if arguments.action == "prepare":
+            prepare()
+        elif arguments.action == "recover":
+            recover()
+        elif arguments.action == "remove":
+            remove()
+        elif arguments.action == "active":
+            active()
     finally:
         lock.close()
     return 0
