@@ -43,6 +43,8 @@ class Failure(RuntimeError):
     pass
 
 
+# Filesystem and process safety
+
 def rooted(path: str) -> Path:
     root = os.environ.get("OMEN_ACPI_TEST_ROOT")
     if root:
@@ -172,6 +174,8 @@ def machine() -> tuple[str, str, str]:
         raise Failure(f"unsupported machine: product={result[0]!r}, board={result[1]!r}, BIOS={result[2]!r}")
     return result
 
+
+# Limine and normal-entry parsing
 
 def esp_path() -> Path:
     override = os.environ.get("OMEN_ACPI_TEST_ESP")
@@ -750,6 +754,8 @@ def require_same_owned_snapshot(esp: Path, initial: tuple[dict, tuple] | None, *
         raise Failure("managed recovery snapshot changed during the transaction")
 
 
+# Snapshot lifecycle
+
 def prepare() -> None:
     product, board, bios = machine()
     probe_state = probe()
@@ -1275,6 +1281,8 @@ def status() -> None:
     emit("RECOVERY_ENTRY", recovery_state)
     emit("RECOMMENDATION", recommendation)
 
+
+# Command-line entry point
 
 def main() -> int:
     parser = argparse.ArgumentParser()

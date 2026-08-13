@@ -117,6 +117,42 @@ for verifier in ("tools/make-release.sh", "update.sh"):
 print("component versions agree and both release verifiers cover Python")
 PY
 
+printf 'reference identity consistency checks...\n'
+python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import ast
+import re
+import sys
+
+root = Path(sys.argv[1])
+expected = ("OMEN Gaming Laptop 16-ap0xxx", "8E35", "F.13")
+names = ("EXPECTED_PRODUCT", "EXPECTED_BOARD", "EXPECTED_BIOS")
+for relative in (
+    "omen-acpi",
+    "scripts/00-probe-boot.sh",
+    "scripts/01-collect-acpi.sh",
+    "scripts/02-build-dsdt.sh",
+    "scripts/03-manage-limine-entry.sh",
+):
+    text = (root / relative).read_text(encoding="utf-8")
+    actual = []
+    for name in names:
+        matches = re.findall(
+            rf'^(?:readonly )?{name}="([^"]+)"$', text, re.MULTILINE
+        )
+        if len(matches) != 1:
+            raise SystemExit(f"could not read one {name} value from {relative}")
+        actual.append(matches[0])
+    if tuple(actual) != expected:
+        raise SystemExit(f"reference identity mismatch in {relative}: {tuple(actual)!r}")
+
+recovery_text = (root / "scripts/04-stock-recovery.py").read_text(encoding="utf-8")
+match = re.search(r'^EXPECTED = (\(.+\))$', recovery_text, re.MULTILINE)
+if match is None or ast.literal_eval(match.group(1)) != expected:
+    raise SystemExit("reference identity mismatch in scripts/04-stock-recovery.py")
+print("reference identity agrees across every transformation engine")
+PY
+
 printf 'embedded Python checks...\n'
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
@@ -1135,6 +1171,13 @@ grep -Fq 'Managed multi-kernel payloads still exist' \
 
 printf 'transform checks...\n'
 python3 "$ROOT/tests/test_transform.py"
+
+printf 'NVDE audit self-test...\n'
+if [[ -f "$ROOT/docs/nvde-audit.py" ]]; then
+    python3 "$ROOT/docs/nvde-audit.py" --self-test
+else
+    printf 'repository-only NVDE tool is not present in this release archive; skipped\n'
+fi
 
 printf 'unvalidated opt-in checks...\n'
 python3 "$ROOT/tests/test_unvalidated.py"

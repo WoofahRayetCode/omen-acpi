@@ -20,12 +20,84 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import re
+import shutil
 import sys
 import tarfile
 import tempfile
 from collections import Counter, deque
 from pathlib import Path
+
+
+ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
+MAX_ARCHIVE_MEMBERS = 256
+MAX_UNPACKED_BYTES = 128 * 1024 * 1024
+
+
+def default_source(argument: str | None) -> Path:
+    """Resolve an explicit source or the newest toolkit archive in HOME."""
+    if argument:
+        source = Path(argument).expanduser()
+        if not source.exists():
+            raise SystemExit(f"source does not exist: {source}")
+        return source
+
+    archives = sorted(
+        Path.home().glob("omen-*acpi-source-*.tar.gz"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not archives:
+        raise SystemExit(
+            "no ~/omen-*acpi-source-*.tar.gz archive found.\n"
+            "Pass a .tar.gz, a directory or a .dsl file explicitly."
+        )
+    return archives[0]
+
+
+def extract_archive(source: Path, destination: Path) -> None:
+    """Extract only bounded regular files and directories into an empty root."""
+    try:
+        archive = tarfile.open(source, mode="r:gz")
+    except (OSError, tarfile.TarError) as error:
+        raise SystemExit(f"cannot open archive {source}: {error}") from error
+
+    with archive:
+        members = archive.getmembers()
+        if not members or len(members) > MAX_ARCHIVE_MEMBERS:
+            raise SystemExit("archive member count is outside the allowed range")
+
+        names: set[str] = set()
+        unpacked_bytes = 0
+        for member in members:
+            path = Path(member.name)
+            normalized = path.as_posix()
+            if not member.name or path.is_absolute() or ".." in path.parts:
+                raise SystemExit(f"unsafe path in archive: {member.name!r}")
+            if normalized in names:
+                raise SystemExit(f"duplicate path in archive: {member.name!r}")
+            names.add(normalized)
+            if not (member.isfile() or member.isdir()):
+                raise SystemExit(f"non-regular member in archive: {member.name!r}")
+            if member.isfile():
+                unpacked_bytes += member.size
+                if unpacked_bytes > MAX_UNPACKED_BYTES:
+                    raise SystemExit("archive expands beyond the allowed size")
+
+        for member in members:
+            target = destination.joinpath(*Path(member.name).parts)
+            if member.isdir():
+                target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise SystemExit(f"cannot read archive member: {member.name!r}")
+            with stream, target.open("xb") as output:
+                shutil.copyfileobj(stream, output, length=1024 * 1024)
+            if target.stat().st_size != member.size:
+                raise SystemExit(f"archive member size changed: {member.name!r}")
 
 
 def strip_comments(text: str) -> str:
@@ -44,17 +116,7 @@ def strip_comments(text: str) -> str:
 
 def collect_all_sources(argument: str | None) -> list[tuple[str, str]]:
     """Return [(label, text)] for every .dsl/.asl found in the source."""
-    if argument:
-        source = Path(argument).expanduser()
-    else:
-        archives = sorted(
-            Path.home().glob("omen-*acpi-source-*.tar.gz"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        if not archives:
-            raise SystemExit("no ~/omen-*acpi-source-*.tar.gz archive found.")
-        source = archives[0]
+    source = default_source(argument)
 
     def read_all(root: Path, prefix: str) -> list[tuple[str, str]]:
         found = sorted(list(root.rglob("*.dsl")) + list(root.rglob("*.asl")))
@@ -63,14 +125,9 @@ def collect_all_sources(argument: str | None) -> list[tuple[str, str]]:
             for path in found
         ]
 
-    if source.is_file() and source.name.endswith((".tar.gz", ".tgz")):
+    if source.is_file() and source.name.endswith(ARCHIVE_SUFFIXES):
         with tempfile.TemporaryDirectory() as temporary:
-            with tarfile.open(source, mode="r:gz") as archive:
-                for member in archive.getmembers():
-                    member_path = Path(member.name)
-                    if member_path.is_absolute() or ".." in member_path.parts:
-                        raise SystemExit(f"unsafe path: {member.name}")
-                archive.extractall(temporary)
+            extract_archive(source, Path(temporary))
             return read_all(Path(temporary), f"{source.name} -> ")
     if source.is_dir():
         return read_all(source, "")
@@ -79,23 +136,7 @@ def collect_all_sources(argument: str | None) -> list[tuple[str, str]]:
 
 def load_source(argument: str | None) -> tuple[str, str]:
     """Return (source_label, asl_text)."""
-    if argument:
-        source = Path(argument).expanduser()
-        if not source.exists():
-            raise SystemExit(f"source does not exist: {source}")
-    else:
-        home = Path.home()
-        archives = sorted(
-            home.glob("omen-*acpi-source-*.tar.gz"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        if not archives:
-            raise SystemExit(
-                "no ~/omen-*acpi-source-*.tar.gz archive found.\n"
-                "Pass a .tar.gz, a directory or a .dsl file explicitly."
-            )
-        source = archives[0]
+    source = default_source(argument)
 
     def biggest_dsl(root: Path) -> Path:
         found = sorted(root.rglob("*.dsl"))
@@ -103,16 +144,9 @@ def load_source(argument: str | None) -> tuple[str, str]:
             raise SystemExit(f"no .dsl file inside {root}")
         return max(found, key=lambda path: path.stat().st_size)
 
-    if source.is_file() and source.name.endswith((".tar.gz", ".tgz")):
+    if source.is_file() and source.name.endswith(ARCHIVE_SUFFIXES):
         with tempfile.TemporaryDirectory() as temporary:
-            with tarfile.open(source, mode="r:gz") as archive:
-                for member in archive.getmembers():
-                    member_path = Path(member.name)
-                    if member_path.is_absolute() or ".." in member_path.parts:
-                        raise SystemExit(f"unsafe path in archive: {member.name}")
-                    if not (member.isfile() or member.isdir()):
-                        raise SystemExit(f"non-regular member in archive: {member.name}")
-                archive.extractall(temporary)
+            extract_archive(source, Path(temporary))
             best = biggest_dsl(Path(temporary))
             return f"{source}  ->  {best.name}", best.read_text(encoding="utf-8", errors="replace")
 
@@ -379,6 +413,35 @@ def self_test() -> int:
     assert names["_PS3"] > 1, "_PS3 must stay ambiguous"
 
     assert "GM22" not in paths, "GM22 is not reachable from _PTS"
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        safe_archive = root / "safe.tar.gz"
+        content = b"DefinitionBlock () {}\n"
+        with tarfile.open(safe_archive, mode="w:gz") as archive:
+            member = tarfile.TarInfo("tables/dsdt.dsl")
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+        safe_destination = root / "safe"
+        safe_destination.mkdir()
+        extract_archive(safe_archive, safe_destination)
+        assert (safe_destination / "tables/dsdt.dsl").read_bytes() == content
+
+        unsafe_archive = root / "unsafe.tar.gz"
+        with tarfile.open(unsafe_archive, mode="w:gz") as archive:
+            member = tarfile.TarInfo("tables/link.dsl")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "../../outside.dsl"
+            archive.addfile(member)
+        unsafe_destination = root / "unsafe"
+        unsafe_destination.mkdir()
+        try:
+            extract_archive(unsafe_archive, unsafe_destination)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("archive extraction accepted a symbolic link")
+
     print("self-test: PASS")
     return 0
 

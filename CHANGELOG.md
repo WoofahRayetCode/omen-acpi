@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Rewrites the README around the problem, validated scope, safe first run and
+  recovery limit, removing repeated implementation detail from the first
+  reading path.
+- Adds `docs/code-overview.md` with component, privilege, state and ownership
+  boundaries and marks the main sections of the larger source files.
+- Clarifies the division between Paolo De Marinis's direction and hardware
+  validation and the substantial OpenAI Codex contribution, including the
+  absence of an exhaustive independent line-by-line human review.
+- Consolidates bounded archive handling in the repository-only NVDE audit tool
+  and extends its self-test to reject symbolic-link members.
+- Adds the NVDE self-test and reference-machine constant consistency to the
+  repository suite.
+- Makes the single-kernel migration fixture independent of a host `cpio`
+  installation and uses the normal `sys.stderr` interface in the kernel-entry
+  reconciler.
+
 ## 2.3.0 - 2026-08-09
 
 - Supports the primary `linux-cachyos` and `linux-cachyos-lts` Limine entries

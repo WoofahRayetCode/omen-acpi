@@ -13,14 +13,14 @@ and Combined transformations are correct as they are.
 Tool: [`nvde-audit.py`](nvde-audit.py). Sources: `dsdt.dsl` (23,227 lines, 614
 methods) **and the 23 SSDTs** from the same collection.
 
-## 0. Why the earlier conclusion was wrong
+## 0. Why the DSDT-only analysis was incomplete
 
-The analysis had been done on the DSDT alone. The DSDT declares as `External`
+The first pass inspected the DSDT alone. The DSDT declares as `External`
 the methods that live in the SSDTs, and `nvde-audit.py` resolves calls by
 four-character short name without accounting for scope. Two consequences:
 
 | Effect | Consequence for the analysis |
-|---|---|
+| --- | --- |
 | `_PS3` is defined 14 times in the DSDT (USB/PCIe ports) | the call `\_SB.PCI0.GPP0.PEGP._PS3 ()` was resolved against an arbitrary, harmless body |
 | the real `PEGP._PS3` lives in `ssdt10` | its body was never read |
 
@@ -107,7 +107,7 @@ _PTS(5) → OMPR = 3 → PEGP._PS3() → PG00._OFF() → If (NVDE != 1) Return
 ## 3. Who writes `NVDE`
 
 | Table | Line | Method | Operation |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | dsdt | 22900 | `WAK` | `NVDE = Zero` on resume from S3/S4 |
 | ssdt10 | 1032 | `PEGP._DSM` | `NVDE = One` (GUID `d4a50b75-…`, → `NBCI`) |
 | ssdt10 | 1038 | `PEGP._DSM` | `NVDE = One` (GUID `a3132d01-…`, → `_GPS`) |
@@ -128,7 +128,7 @@ calls the helper `WAK`, which performs the write.
 ## 4. Who reads `NVDE`
 
 | Table | Line | Method | Reachable from patched `_PTS` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | ssdt10 | 622 | `PG00._OFF` | **yes**, via `_PS3` |
 | ssdt10 | 569 | `PG00._ON` | no |
 | dsdt | 13296, 13317 | `GM22` | no (WMI dispatch from the operating system) |

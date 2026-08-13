@@ -83,6 +83,8 @@ BOLD=''
 DIM=''
 RESET=''
 
+# Output and confirmation
+
 set_palette() {
     if (( COLOR_ENABLED )); then
         ORANGE=$'\033[38;5;208m'
@@ -177,6 +179,8 @@ pause_for_user() {
     read -r -p 'Press Enter to continue... ' _
 }
 
+# Machine gate and privileged engine dispatch
+
 machine_values() {
     MACHINE_PRODUCT="$(sanitize_line "$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)")"
     MACHINE_BOARD="$(sanitize_line "$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)")"
@@ -229,6 +233,8 @@ run_root_engine() {
         "$SUDO_BIN" -- "$@"
     fi
 }
+
+# Dependency management
 
 declare -a MISSING_PACKAGES=()
 declare -a MISSING_DETAILS=()
@@ -468,6 +474,8 @@ ensure_dependencies() {
     fi
 }
 
+# Boot-state inspection
+
 PROBE_STATE="not-checked"
 PROBE_CLEAN=0
 PROBE_REASON="not-checked"
@@ -636,6 +644,8 @@ current_boot_id() {
         printf 'unavailable'
     fi
 }
+
+# Resumable workflows and private artifacts
 
 set_pending_action() {
     local action="$1" variant="${2:-}" temporary
@@ -1013,6 +1023,8 @@ latest_build() {
     local variant="$1"
     latest_artifact "$(build_pointer_for "$variant")" "omen-dsdt-*-${variant}-build-*.tar.gz"
 }
+
+# Collection, build and managed-entry lifecycle
 
 run_logged() {
     local label="$1"
@@ -1506,6 +1518,8 @@ secure_boot_state() {
     printf 'unknown\n'
 }
 
+# Guided and interactive workflows
+
 doctor() {
     local fix="${1:-}" kernel_support="unknown" secure_boot probe_ready=0
     section "System check"
@@ -1991,6 +2005,8 @@ interactive_main() {
         esac
     done
 }
+
+# Command-line entry point
 
 usage() {
     cat <<EOF

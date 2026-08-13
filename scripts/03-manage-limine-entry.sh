@@ -58,6 +58,8 @@ ACTION_CLEANUP_WORK=""
 ACTION_CLEANUP_CANDIDATE=""
 ACTION_CLEANUP_PRESERVE_CANDIDATE=0
 
+# Output and command selection
+
 log() {
     printf '%s\n' "$*"
 }
@@ -140,6 +142,8 @@ select_variant() {
             ;;
     esac
 }
+
+# Privilege, locking and machine preconditions
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
@@ -312,6 +316,8 @@ check_install_preconditions() {
     running_kernel_supports_table_upgrade \
         || die "The running kernel does not prove CONFIG_ACPI_TABLE_UPGRADE=y."
 }
+
+# Limine paths and ACPI transformation
 
 parse_esp_path_from_defaults() {
     local defaults_file="$1"
@@ -1177,6 +1183,8 @@ with output.open("w", encoding="utf-8") as stream:
 PY
 }
 
+# Legacy installation parsing
+
 extract_exact_entry() {
     local config="$1"
     local entry_name="$2"
@@ -1596,6 +1604,8 @@ build_early_initramfs() {
     )
     chmod 0600 "$destination"
 }
+
+# Managed state and ownership checks
 
 write_dropin_file() {
     local destination="$1"
@@ -2077,6 +2087,8 @@ install_action() {
     log "Do not make the experimental entry the default."
     log "Run refresh after a kernel/initramfs or Limine update; setup/update also performs this migration."
 }
+
+# Refresh, diagnostics and removal actions
 
 refresh_action() {
     local esp config work backup stored_machine current_machine rc=0
@@ -2829,6 +2841,8 @@ pre_uninstall_check_action() {
 
     log "Pre-uninstall check passed: all reserved Limine entry names are absent."
 }
+
+# Command-line entry point
 
 main() {
     local action="${1:-help}"

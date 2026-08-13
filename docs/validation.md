@@ -103,12 +103,12 @@ physical hardware for safety:
 Automated success cannot turn any of these items into a support or compatibility
 claim.
 
-## Release gate
+## Release checks
 
-The candidate is acceptable only while the complete repository suite, Bash and
-Python syntax checks, NVDE self-test, strict `SHA256SUMS` verification,
-reproducible archive comparison, archive-content audit and non-installing updater
-verification all pass from a clean tree. Version 2.3.0 additionally requires
+Before a release is published, the project requires the complete repository
+suite, Bash and Python syntax checks, NVDE self-test, strict `SHA256SUMS`
+verification, reproducible archive comparison, archive-content audit and
+non-installing updater verification to pass from a clean tree. Version 2.3.0 additionally requires
 the standard/LTS status to remain current without changing either ACPI
 transformation. Combined-on-LTS validation does not imply S5-on-LTS validation.
 No non-reference hardware has been physically validated.

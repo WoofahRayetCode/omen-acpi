@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 
 
@@ -27,6 +28,8 @@ SCHEMA = 1
 class Failure(RuntimeError):
     pass
 
+
+# Filesystem safety
 
 def regular(path: Path) -> os.stat_result:
     try:
@@ -75,6 +78,8 @@ def blake2(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+
+# Limine parsing and stock-source validation
 
 def parse_entries(text: str) -> list[dict]:
     lines = text.splitlines()
@@ -276,6 +281,8 @@ def validated_sources(text: str, esp: Path) -> tuple[dict[str, dict], dict[str, 
             )
     return primary, fallback
 
+
+# Managed entry format and ownership
 
 def variant_names(variant: str) -> dict[str, str]:
     if variant not in ("s5", "combined"):
@@ -486,6 +493,8 @@ def unchanged(path: Path, original: str, info: os.stat_result) -> bool:
         and path.read_text(encoding="utf-8", errors="strict") == original
     )
 
+
+# Reconciliation actions
 
 def sync(esp: Path, state: Path, variant: str) -> None:
     secure_directory(esp)
@@ -707,6 +716,8 @@ def status(esp: Path, state: Path | None, variant: str | None) -> int:
     return 0 if state_name == "current" else 3
 
 
+# Command-line entry point
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("list", "sync", "remove", "status"))
@@ -737,5 +748,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
-        print(f"ERROR: {error}", file=os.sys.stderr)
+        print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(1)

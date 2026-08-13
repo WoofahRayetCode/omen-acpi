@@ -347,6 +347,9 @@ class KernelEntriesTest(unittest.TestCase):
             "open(path, 'w', encoding='utf-8').writelines(lines[:start] + lines[end:])\n"
         )
         tool.chmod(0o755)
+        cpio = mock_bin / "cpio"
+        cpio.write_text("#!/bin/sh\ncat\n")
+        cpio.chmod(0o755)
 
         environment = dict(os.environ)
         environment.update(

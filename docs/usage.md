@@ -279,7 +279,7 @@ omen-acpi                 public interactive and command-line frontend
 install.sh                checksum-verifying /usr/local installer
 uninstall.sh              guarded uninstaller
 update.sh                 reusable release updater (separate release asset)
-scripts/                  private audited engines used by the frontend
+scripts/                  internal probe, build and mutation engines
 patches/README.md         normalized S5 and WQBZ transformations
 tests/                    synthetic, non-firmware regression tests
 docs/                     validation, analysis and extended documentation
@@ -291,3 +291,6 @@ SHA256SUMS
 
 `update.sh` and `docs/` are repository files but are not included in the release
 archive. The archive contains exactly the files covered by `SHA256SUMS`.
+
+See [`code-overview.md`](code-overview.md) for the component boundaries,
+privilege levels, setup flow and recommended reading order.
