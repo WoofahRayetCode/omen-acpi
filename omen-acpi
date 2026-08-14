@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.3.0"
+readonly VERSION="2.4.0"
 readonly APP_NAME="OMEN ACPI Toolkit"
 readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 readonly EXPECTED_BOARD="8E35"
@@ -873,7 +873,7 @@ recover_stock() {
         NORMAL)
             info "The normal stock entry still exists and was not modified."
             if grep -Fxq $'SNAPSHOT\trefresh-required' <<<"$preview"; then
-                info "After booting stock, choose recovery option 1 to create a trusted 2.3.0 snapshot."
+                info "After booting stock, choose recovery option 1 to create a trusted 2.4.0 snapshot."
             fi
             show_stock_reboot_prompt
             ;;

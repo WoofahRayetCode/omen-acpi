@@ -1,7 +1,7 @@
 # Preventive stock recovery
 
 This document describes the stock-recovery state machine and transaction rules
-implemented by OMEN ACPI Toolkit v2.3.0. The minimum safe workflow and the
+implemented by OMEN ACPI Toolkit v2.4.0. The minimum safe workflow and the
 irreducible recovery limitation remain in the packaged `README.md`.
 
 ## Components and status
@@ -97,11 +97,13 @@ directory, regular file, symlink—including a broken symlink—unsafe mode or
 foreign content is `modified`. It is never renamed, repaired, replaced or
 deleted automatically.
 
-Version 2.1.11 reference snapshots remain trusted only on the exact reference
-identity. Version 2.1.10 snapshots remain ownership- and integrity-checked but
-are not trusted for boot and are reported as `refresh-required`. While a valid normal entry
-still exists, the legacy pair can be preserved for a normal confirmed reboot,
-refreshed from a subsequent clean stock boot or explicitly removed.
+Versions 2.2.0 and 2.3.0 snapshots remain trusted when integrity and current
+recorded-machine identity checks pass. Version 2.1.11 reference snapshots
+remain trusted only on the exact reference identity. Version 2.1.10 snapshots
+remain ownership- and integrity-checked but are not trusted for boot and are
+reported as `refresh-required`. While a valid normal entry still exists, the
+legacy pair can be preserved for a normal confirmed reboot, refreshed from a
+subsequent clean stock boot or explicitly removed.
 
 Only a current trusted snapshot can create or validate the managed recovery
 entry. If the normal entry is missing, ambiguous or unusable and only a legacy

@@ -26,9 +26,9 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "2.3.0"
-OWNED_SNAPSHOT_VERSIONS = {"2.1.10", "2.1.11", "2.2.0", "2.3.0"}
-TRUSTED_SNAPSHOT_VERSIONS = {"2.1.11", "2.2.0", "2.3.0"}
+VERSION = "2.4.0"
+OWNED_SNAPSHOT_VERSIONS = {"2.1.10", "2.1.11", "2.2.0", "2.3.0", "2.4.0"}
+TRUSTED_SNAPSHOT_VERSIONS = {"2.1.11", "2.2.0", "2.3.0", "2.4.0"}
 SCHEMA = 1
 ENTRY = "zz-omen-acpi-stock-recovery"
 BEGIN = "# BEGIN OMEN-ACPI OWNED STOCK RECOVERY v1"

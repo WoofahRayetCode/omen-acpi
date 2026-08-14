@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.4.0 - 2026-08-14
 
 - Refactors the Bash and Python workflow code for procedural readability and
   verifies equivalent ACPI, CLI, recovery and multi-kernel behaviour.

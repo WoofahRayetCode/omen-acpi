@@ -62,6 +62,11 @@ Combined also completed the checked boot without the related `WQBZ`, `WQBE` or
 `AE_AML_BUFFER_LIMIT` messages. The standard/LTS entry lifecycle and one
 Combined LTS boot were checked with v2.3.0; S5-only on LTS was not boot-tested.
 
+Version 2.4.0 changes procedural structure and release metadata only. Its ACPI
+transformers and AML round-trip verifiers are byte-identical to v2.3.0, so the
+v2.3.0 hardware observations remain the applicable baseline; no broader
+hardware compatibility is claimed.
+
 The full distinction between real-hardware observations, automated fixtures and
 untested cases is in [`docs/validation.md`](docs/validation.md).
 
@@ -156,17 +161,17 @@ partial system upgrades and never invokes an AUR helper.
 
 ## Installation
 
-### Published v2.3.0 release
+### Published v2.4.0 release
 
 Use the three assets attached to the
-[v2.3.0 release](https://github.com/paolo-de-marinis/omen-acpi/releases/tag/v2.3.0):
+[v2.4.0 release](https://github.com/paolo-de-marinis/omen-acpi/releases/tag/v2.4.0):
 
 ```bash
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.3.0/omen-acpi-toolkit-v2.3.0.tar.gz
-curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.3.0/omen-acpi-toolkit-v2.3.0.tar.gz.sha256
-sha256sum -c omen-acpi-toolkit-v2.3.0.tar.gz.sha256
-tar xzf omen-acpi-toolkit-v2.3.0.tar.gz
-cd omen-acpi-toolkit-v2.3.0
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.4.0/omen-acpi-toolkit-v2.4.0.tar.gz
+curl -LO https://github.com/paolo-de-marinis/omen-acpi/releases/download/v2.4.0/omen-acpi-toolkit-v2.4.0.tar.gz.sha256
+sha256sum -c omen-acpi-toolkit-v2.4.0.tar.gz.sha256
+tar xzf omen-acpi-toolkit-v2.4.0.tar.gz
+cd omen-acpi-toolkit-v2.4.0
 sha256sum -c SHA256SUMS
 sudo ./install.sh
 omen-acpi
@@ -357,7 +362,7 @@ firmware behavior or validate another machine.
 - [`docs/validation.md`](docs/validation.md): hardware observations and
   synthetic-test boundary.
 
-Repository-only documentation is not included in the v2.3.0 release archive.
+Repository-only documentation is not included in the v2.4.0 release archive.
 This README retains the installation, stock-return, recovery-limit and removal
 information required to operate the packaged toolkit.
 
