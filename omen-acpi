@@ -1715,21 +1715,22 @@ resume_pending_workflow() {
     printf 'Continuing: %s\n' "$description"
     case "$action" in
         setup)
-            guided_setup "$variant"
+            guided_setup "$variant" || return
             ;;
         collect)
-            capture_source
+            capture_source || return
             ;;
         build)
-            build_variants "$variant"
+            build_variants "$variant" || return
             ;;
         install)
-            install_variants "$variant"
+            install_variants "$variant" || return
             ;;
         *)
             die "Unsupported pending action: $action"
             ;;
     esac
+    clear_pending_action
 }
 
 pending_workflow_action() {

@@ -447,6 +447,22 @@ EOF
         || fail "pending setup selection was not preserved"
     pending_is_same_boot || fail "pending setup has the wrong boot ID"
     clear_pending_action
+
+    pending_is_same_boot() { return 1; }
+    install_variants() { [[ "$1" == "combined" ]]; }
+    set_pending_action install combined
+    resume_pending_workflow >/dev/null
+    [[ ! -e "$PENDING_FILE" ]] \
+        || fail "successful resumed install left stale pending state"
+
+    install_variants() { return 9; }
+    set_pending_action install combined
+    if resume_pending_workflow >/dev/null 2>&1; then
+        fail "failed resumed install returned success"
+    fi
+    [[ -f "$PENDING_FILE" ]] \
+        || fail "failed resumed install discarded pending state"
+    clear_pending_action
 )
 
 fixture="$work/root"

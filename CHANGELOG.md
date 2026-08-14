@@ -2,6 +2,8 @@
 
 ## 2.4.0 - 2026-08-14
 
+- Clears a successfully resumed workflow's pending marker while preserving it
+  when the resumed operation fails.
 - Refactors the Bash and Python workflow code for procedural readability and
   verifies equivalent ACPI, CLI, recovery and multi-kernel behaviour.
 - Rewrites the README around the problem, validated scope, safe first run and
