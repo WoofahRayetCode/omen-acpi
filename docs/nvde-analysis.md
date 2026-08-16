@@ -1,14 +1,15 @@
-# `NVDE` analysis — HP OMEN 16-ap0xxx / 8E35 / BIOS F.13
+# `NVDE` analysis — reference firmware, board 8E35 / BIOS F.13
 
 Question: does writing `NVDE = 1` during `_PTS`, before `OMPR = 3` and
 `_PS3()`, have any effect on the shutdown path?
 
-**Answer: yes, but writing it is unnecessary.** `NVDE` is the guard condition of
-the very method the patch invokes to power the GPU down, so it is relevant, and
-an earlier revision of this document — based on the DSDT alone — was wrong to
-call it inert. However the NVIDIA driver already sets it in every condition that
-matters, including after resume (measured, see section 5). The current S5-only
-and Combined transformations are correct as they are.
+**Answer: yes, but the tested reference path did not require the patch to write
+it.** `NVDE` is a guard condition of the method invoked to power the GPU down,
+so it is relevant, and an earlier revision of this document — based on the DSDT
+alone — was wrong to call it inert. In the documented driver environment,
+firmware traces showed the driver setting it and re-arming it after the measured
+S3 resume (section 5). The current S5-only and Combined transformations preserve
+the hardware-validated sequence under that measured premise.
 
 Tool: [`nvde-audit.py`](nvde-audit.py). Sources: `dsdt.dsl` (23,227 lines, 614
 methods) **and the 23 SSDTs** from the same collection.
@@ -114,13 +115,14 @@ _PTS(5) → OMPR = 3 → PEGP._PS3() → PG00._OFF() → If (NVDE != 1) Return
 | ssdt10 | 1044 | `PEGP._DSM` | `NVDE = One` (GUID `cbeca351-…`, → `NVJT`) |
 | ssdt10 | 1050 | `PEGP._DSM` | `NVDE = One` (GUID `a486d8f8-…`, → `NVOP`) |
 
-These are the four standard NVIDIA Optimus `_DSM` GUIDs, invoked by the NVIDIA
+These are the four standard NVIDIA Optimus `_DSM` GUIDs used by the NVIDIA
 driver. Therefore:
 
 - the firmware **does** set `NVDE = 1`, contrary to the earlier claim;
 - the DSDT's `If ((NVDE == One))` branches are **not** dead code;
-- with the NVIDIA driver loaded, `NVDE` is normally 1 at shutdown, which is why
-  the minimal patch works without writing `NVDE`.
+- in the tested driver configuration, these calls supplied `NVDE = 1` before
+  the measured shutdowns, which is why the minimal patch worked without writing
+  `NVDE`.
 
 Note that `WAK` is not where the reset appears by name: `_WAK` (DSDT line 4057)
 calls the helper `WAK`, which performs the write.
@@ -134,15 +136,15 @@ calls the helper `WAK`, which performs the write.
 | dsdt | 13296, 13317 | `GM22` | no (WMI dispatch from the operating system) |
 | dsdt | 21956 | `_Q8D` | no (asynchronous EC query) |
 
-## 5. The suspected failure case, measured: it does not occur
+## 5. The suspected failure case did not occur in the measured S3 test
 
 `WAK` clears `NVDE` on resume from S3 (`Arg0 == 0x03`) and S4 (`0x04`). If the
 driver did not re-issue any of the four `_DSM` calls before shutdown, `NVDE`
 would stay `0`, `PG00._OFF()` would return immediately, and the S5 patch would
 have no effect at all.
 
-**Measured on 2026-08-01: this does not happen.** The driver re-arms `NVDE` by
-itself, about 1.3 seconds after resume.
+**Measured on 2026-08-01:** the failure case did not occur in this S3 test. The
+driver re-armed `NVDE` about 1.3 seconds after resume.
 
 ### Method
 
@@ -204,16 +206,19 @@ Two distinct results, and they should be kept apart.
 2.1.6/2.1.7 was not a neutral simplification: it made the correction dependent
 on whoever sets `NVDE`.
 
-**In practice:** that dependency is satisfied. The NVIDIA driver re-arms `NVDE`
-on every resume in about a second, as measured in section 5. Even the one
-scenario in which the minimal patch could have stayed inert does not arise.
+**In the tested configuration:** that dependency was satisfied. The NVIDIA
+driver re-armed `NVDE` about a second after the measured S3 resume. The scenario
+in which the minimal patch would remain inert therefore did not arise in that
+test; S4 and other driver or firmware configurations were not established by
+the same observation.
 
-**Recommendation: do not add a third variant.** The two currently implemented
-variants are correct as they are. Reintroducing `NVDE = 1` would make the patch
-self-sufficient on paper, but would buy a margin that is not needed while paying
-a real cost: between `_PTS(5)` and the actual power-off, `NVDE = 1` makes the
-branches in `_Q8D` (EC event `0x8D`) and `GM22` (WMI command `20008h` type
-`0x20`) executable, and neither has ever been exercised in that window.
+**Recommendation for the validated reference configuration: do not add a third
+variant.** The measurement provides no evidence that the two implemented
+variants need another write. Reintroducing `NVDE = 1` would make the patch
+self-sufficient on paper, but would also make the branches in `_Q8D` (EC event
+`0x8D`) and `GM22` (WMI command `20008h` type `0x20`) executable between
+`_PTS(5)` and the actual power-off; neither branch has been exercised in that
+window.
 
 It should also be noted that `NVDE = 1` would not be sufficient on its own:
 `PG00._OFF` has a second guard, `If ((GSTA () != One)) { Return (Zero) }`.

@@ -35,6 +35,93 @@ Both variants use the firmware's existing methods. They do not call the GPU
 power resource directly, force `NVDE`, modify suspend or runtime power
 management, flash the BIOS or distribute a firmware table.
 
+## Why the S5 transformation reaches the GPU power resource
+
+During an orderly transition to the S5 soft-off state, ACPI invokes `_PTS` with
+`Arg0 == 5`. The reference firmware already contains the methods needed to turn
+off the discrete GPU, but the tested stock S5 path did not enter the branch that
+uses them.
+
+The S5 transformation adds only this sequence to `_PTS(5)`:
+
+```asl
+Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)
+\_SB.PCI0.GPP0.PEGP._PS3 ()
+```
+
+The order is essential. `OMPR` normally starts at `0x02`; the firmware's
+`PEGP._PS3()` calls the GPU power resource only when `OMPR == 0x03`. Setting the
+value first therefore opens the existing branch, and calling `_PS3()` then
+reaches `PG00._OFF()`:
+
+```text
+_PTS(5) → OMPR = 3 → PEGP._PS3() → PG00._OFF()
+```
+
+`_PS3` is the device power-state method implemented by the firmware. `PG00` is
+the power resource used by the discrete GPU. The transformation deliberately
+does not call `PG00._OFF()` directly: it preserves the firmware's `_PS3`
+sequence and its existing guards.
+
+One of those guards is `NVDE`. `PG00._OFF()` returns without performing the
+power-down body when `NVDE != 1`; it also checks the result of `GSTA()`. Neither
+implemented variant writes `NVDE`. On the documented reference environment,
+the NVIDIA driver was observed re-arming `NVDE` after an S3 resume, which is the
+measured premise under which the minimal sequence works. That observation does
+not establish the same state for another driver, BIOS or machine. The complete
+DSDT/SSDT reconstruction and measurement are in
+[`docs/nvde-analysis.md`](docs/nvde-analysis.md).
+
+## Why the WQBZ change is separate
+
+`WQBZ` is a firmware WMI query method. In the two affected loops, `BF01` is the
+source buffer and `Local5` is the method-local integer used as its current
+index. `Local1` indexes the destination, while `Local3` temporarily holds the
+byte being copied. These names are AML local variables, not hardware registers
+or error codes.
+
+The stock loop tests the current source byte before proving that the index is
+inside the buffer:
+
+```asl
+While (LNotEqual (DerefOf (Index (BF01, Local5)), Zero))
+```
+
+For a buffer of length `0x32`, the valid indices stop at `0x31`. If no zero byte
+has stopped the loop before `Local5` becomes `0x32`, the condition itself tries
+to read past the buffer and produces the observed `AE_AML_BUFFER_LIMIT`. The
+Combined transformation first requires
+
+```asl
+Local5 < SizeOf (BF01)
+```
+
+and then performs the original zero-byte test inside the loop. It bounds exactly
+two occurrences in `WQBZ`; it does not alter the S5 sequence. Conversely,
+S5-only leaves both loops unchanged and was sufficient for the documented
+shutdown result. The exact before/after ASL is in
+[`patches/README.md`](patches/README.md).
+
+## From the local DSDT to one experimental boot
+
+The repository contains transformation rules, not the reference laptop's
+firmware table. For each build, the toolkit follows one evidence-preserving
+chain:
+
+1. collect the DSDT currently supplied by the target machine;
+2. decompile it to ASL and require the expected headers, methods and occurrence
+   counts;
+3. apply the selected deterministic transformation;
+4. compile the result to AML, verify its header and checksum, decompile it again
+   and check the reconstructed semantics;
+5. place the verified AML in a small ACPI early CPIO;
+6. prepend that CPIO only to a separate, owned Limine test entry.
+
+Selecting the experimental entry makes Linux load the checked DSDT override for
+that boot. Selecting a normal CachyOS entry omits the override and returns to the
+firmware-supplied table. This is why the toolkit can test the transformation
+without flashing the BIOS or replacing the normal entries.
+
 ## Validated reference
 
 Physical validation is limited to this configuration:

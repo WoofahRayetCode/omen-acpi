@@ -1,8 +1,16 @@
 # Preventive stock recovery
 
-This document describes the stock-recovery state machine and transaction rules
-implemented by OMEN ACPI Toolkit v2.4.0. The minimum safe workflow and the
-irreducible recovery limitation remain in the packaged `README.md`.
+The recovery mechanism is preventive, not generative. It can create a stock
+recovery entry only from kernel and initramfs bytes that were copied and bound
+to a manifest while a usable normal entry still existed. It cannot reconstruct
+those bytes from an experimental entry after both the normal source and the
+trusted snapshot have been lost.
+
+That distinction determines the whole state machine: first preserve a verified
+stock route, then test an override, and never treat a variant initramfs or an old
+configuration backup as stock evidence. This document derives the corresponding
+states and transaction rules implemented by OMEN ACPI Toolkit v2.4.0. The
+minimum safe workflow remains in the packaged `README.md`.
 
 ## Components and status
 

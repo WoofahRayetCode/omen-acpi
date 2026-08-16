@@ -1,8 +1,14 @@
 # Code overview
 
-This note explains how the toolkit is divided and where a reader should start.
-It is about program structure; operational and recovery instructions remain in
-the main README and the usage guide.
+The ACPI change itself is small. Most of the repository exists to answer the
+harder operational question: how can a DSDT collected from one machine be
+transformed, verified, loaded for one reversible test boot and later removed
+without confusing it with stock, foreign or partially modified state?
+
+The code should therefore be read as a protected pipeline around the
+transformation, not as a collection of unrelated scripts. This note follows
+that pipeline and explains where each safety boundary lives. Operational and
+recovery instructions remain in the main README and the usage guide.
 
 ## Reading path
 
@@ -87,11 +93,18 @@ Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)
 
 inside the existing `_PTS` method when `Arg0 == 5`.
 
-The `combined` variant performs the same change and separately bounds two `WQBZ`
-loops before `BF01[Local5]` is read. The builder then checks that only the
-intended method bodies and OEM revision changed. It compiles the result with
-`iasl`, verifies the AML header and checksum, decompiles it again and checks the
-reconstructed semantics.
+The `combined` variant performs the same change and separately bounds two
+`WQBZ` loops before `BF01[Local5]` is read. Here `BF01` is the source buffer and
+`Local5` is the method-local integer used as its current index. The stock loop
+can evaluate `BF01[0x32]` even though a `0x32`-byte buffer ends at index `0x31`.
+Combined requires `Local5 < SizeOf(BF01)` before that dereference and then
+retains the original zero-byte stopping rule.
+
+The builder checks that only the intended method bodies and OEM revision
+changed. It compiles the result with `iasl`, verifies the AML header and
+checksum, decompiles it again and checks the reconstructed semantics. The full
+call-chain derivation and exact before/after loops are in
+[`../patches/README.md`](../patches/README.md).
 
 No reference-machine AML is stored in the repository. Every build begins from
 the target machine's locally collected source.
