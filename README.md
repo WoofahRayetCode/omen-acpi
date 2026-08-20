@@ -9,6 +9,13 @@ The toolkit collects the laptop's own ACPI tables, builds a checked DSDT
 override and adds it to a **separate Limine entry**. The normal CachyOS entries
 remain available and unchanged.
 
+> **Development model.** This repository was built through a substantially
+> AI-assisted engineering workflow. OpenAI Codex produced significant portions
+> of the Bash/Python implementation, automated tests and documentation. Paolo
+> De Marinis supplied the hardware evidence, set objectives, safety constraints
+> and acceptance criteria, reviewed targeted changes, investigated regressions,
+> performed the real-hardware checks and made the release decisions.
+
 > **This is not a generic HP OMEN fix.** Only the model, board and BIOS listed
 > below have been physically validated. An incompatible ACPI override can
 > prevent Linux from booting or cause instability, data loss, abnormal thermal
