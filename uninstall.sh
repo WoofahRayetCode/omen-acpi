@@ -165,6 +165,19 @@ cmp -s -- "$TARGET_BIN" "$TARGET_ROOT/omen-acpi" \
 # name remains before any toolkit path is detached.
 OMEN_ACPI_LOCK_FD9_HELD=1 "$MANAGER" pre-uninstall-check
 
+alpm_hook_source="$TARGET_ROOT/alpm/90-omen-acpi-refresh.hook"
+alpm_hook_target="/usr/share/libalpm/hooks/90-omen-acpi-refresh.hook"
+if path_exists "$alpm_hook_target"; then
+    if [[ -f "$alpm_hook_target" && ! -L "$alpm_hook_target" \
+        && -f "$alpm_hook_source" && ! -L "$alpm_hook_source" ]] \
+        && cmp -s -- "$alpm_hook_target" "$alpm_hook_source"; then
+        rm -f -- "$alpm_hook_target" \
+            || die "Could not remove the owned ALPM refresh hook: $alpm_hook_target"
+    else
+        die "ALPM refresh hook at $alpm_hook_target is missing, modified or not owned by this installation; inspect it before uninstalling."
+    fi
+fi
+
 transaction_token="$$"
 removed_root="/usr/local/lib/.omen-acpi-fix.removed.$transaction_token"
 removed_bin="/usr/local/bin/.omen-acpi.removed.$transaction_token"

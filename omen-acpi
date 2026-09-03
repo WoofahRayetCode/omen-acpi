@@ -7,15 +7,16 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.4.0"
+readonly VERSION="2.5.0"
 readonly APP_NAME="OMEN ACPI Toolkit"
 readonly EXPECTED_PRODUCT="OMEN Gaming Laptop 16-ap0xxx"
 readonly EXPECTED_BOARD="8E35"
 readonly EXPECTED_BIOS="F.13"
-readonly S5_ENTRY="zz-omen-acpi-s5-test"
-readonly S5_LTS_ENTRY="zz-omen-acpi-s5-test-lts"
-readonly COMBINED_ENTRY="zz-omen-acpi-combined-test"
-readonly COMBINED_LTS_ENTRY="zz-omen-acpi-combined-test-lts"
+readonly S5_ENTRY="zz-OMEN ACPI S5"
+readonly S5_LTS_ENTRY="zz-OMEN ACPI S5 LTS"
+readonly COMBINED_ENTRY="zz-OMEN ACPI Combined"
+readonly COMBINED_LTS_ENTRY="zz-OMEN ACPI Combined LTS"
+readonly STOCK_RECOVERY_ENTRY="zz-OMEN ACPI stock recovery"
 readonly SUDO_BIN="/usr/bin/sudo"
 readonly PACMAN_BIN="/usr/bin/pacman"
 readonly SYSTEMCTL_BIN="/usr/bin/systemctl"
@@ -862,7 +863,7 @@ recover_stock() {
     if grep -Fxq $'NORMAL_ENTRY\tmissing' <<<"$preview" \
         && grep -Fxq $'SNAPSHOT\tvalid' <<<"$preview"; then
         printf 'The normal stock entry is missing. The managed %s entry will be created\n' \
-            'zz-omen-acpi-stock-recovery'
+            "$STOCK_RECOVERY_ENTRY"
         printf 'from the verified snapshot. The Limine default will not be changed.\n\n'
         confirm_dangerous "Create or restore the managed stock recovery entry?" no || return 0
     fi
@@ -873,7 +874,7 @@ recover_stock() {
         NORMAL)
             info "The normal stock entry still exists and was not modified."
             if grep -Fxq $'SNAPSHOT\trefresh-required' <<<"$preview"; then
-                info "After booting stock, choose recovery option 1 to create a trusted 2.4.0 snapshot."
+                info "After booting stock, choose recovery option 1 to create a trusted 2.5.0 snapshot."
             fi
             show_stock_reboot_prompt
             ;;
@@ -892,7 +893,7 @@ recover_stock() {
 remove_stock_recovery() {
     ensure_dependencies stock-recovery
     section "Remove managed stock recovery"
-    printf 'This removes only the owned zz-omen-acpi-stock-recovery entry, its copied payloads,\n'
+    printf 'This removes only the owned %s entry, its copied payloads,\n' "$STOCK_RECOVERY_ENTRY"
     printf 'and its integrity-checked manifest. A valid normal linux-cachyos entry with verified\n'
     printf 'kernel and override-free initramfs payloads is required.\n'
     printf 'Existing normal and experimental entries are not edited.\n\n'
@@ -1171,6 +1172,7 @@ variant_probe_format() {
 
 inspect_variant_schema() {
     local variant="$1" output rc=0 schema
+    INSPECT_REASON=""
     ensure_admin
     if output="$("$SUDO_BIN" -- "$MANAGER" inspect "$variant")"; then
         rc=0
@@ -1178,6 +1180,7 @@ inspect_variant_schema() {
         rc=$?
     fi
     schema="$(awk -F= '$1 == "SCHEMA" { print $2 }' <<<"$output")"
+    INSPECT_REASON="$(awk -F= '$1 == "REASON" { print substr($0, index($0, "=") + 1); exit }' <<<"$output")"
     case "$schema" in
         managed|legacy|absent)
             (( rc == 0 )) || die "Could not verify the $variant installation format."
@@ -1280,7 +1283,12 @@ refresh_one() {
     schema="$(inspect_variant_schema "$variant")"
     case "$schema" in
         absent) info "$variant is not installed."; return 0 ;;
-        conflict) die "$variant contains unrecognised or modified state; automatic refresh is blocked." ;;
+        conflict)
+            if [[ -n "${INSPECT_REASON:-}" ]]; then
+                die "$variant contains unrecognised or modified state; automatic refresh is blocked: $INSPECT_REASON"
+            fi
+            die "$variant contains unrecognised or modified state; automatic refresh is blocked."
+            ;;
         legacy) die "$variant uses the pre-managed legacy format; remove it normally, then install again." ;;
         managed) ;;
     esac
@@ -1567,6 +1575,20 @@ doctor() {
 
     secure_boot="$(secure_boot_state)"
     printf 'Secure Boot: %s\n' "$secure_boot"
+
+    if [[ "$fix" == "--fix" ]]; then
+        local variant schema
+        for variant in s5 combined; do
+            variant_installed "$variant" || continue
+            schema="$(inspect_variant_schema "$variant")"
+            [[ "$schema" == "managed" ]] || continue
+            if "$SUDO_BIN" -- "$MANAGER" status "$variant" >/dev/null 2>&1; then
+                continue
+            fi
+            info "Refreshing stale $variant Limine entries."
+            refresh_one "$variant"
+        done
+    fi
 }
 
 choose_setup_variant() {

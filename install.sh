@@ -7,7 +7,7 @@ set -Eeuo pipefail
 umask 077
 export PATH="/usr/bin:/bin"
 
-readonly VERSION="2.4.0"
+readonly VERSION="2.5.0"
 readonly TARGET_ROOT="/usr/local/lib/omen-acpi-fix"
 readonly TARGET_BIN="/usr/local/bin/omen-acpi"
 readonly TARGET_DOC="/usr/local/share/doc/omen-acpi-fix"
@@ -225,8 +225,10 @@ release_files=(
     scripts/01-collect-acpi.sh
     scripts/02-build-dsdt.sh
     scripts/03-manage-limine-entry.sh
+    packaging/90-omen-acpi-refresh.hook
     scripts/04-stock-recovery.py
     scripts/05-kernel-entries.py
+    scripts/06-alpm-refresh.sh
     tests/run.sh
     tests/test_interactive_menus.sh
     tests/test_kernel_entries.py
@@ -363,7 +365,8 @@ for script_name in \
     01-collect-acpi.sh \
     02-build-dsdt.sh \
     03-manage-limine-entry.sh \
-    05-kernel-entries.py; do
+    05-kernel-entries.py \
+    06-alpm-refresh.sh; do
     install -o root -g root -m 0755 \
         "$source_snapshot/scripts/$script_name" \
         "$app_stage/scripts/$script_name"
@@ -371,6 +374,10 @@ done
 install -o root -g root -m 0755 \
     "$source_snapshot/scripts/04-stock-recovery.py" \
     "$app_stage/scripts/04-stock-recovery.py"
+install -d -o root -g root -m 0755 "$app_stage/alpm"
+install -o root -g root -m 0644 \
+    "$source_snapshot/packaging/90-omen-acpi-refresh.hook" \
+    "$app_stage/alpm/90-omen-acpi-refresh.hook"
 printf '%s\n' "$VERSION" > "$app_stage/VERSION"
 chown root:root "$app_stage/VERSION"
 chmod 0644 "$app_stage/VERSION"
@@ -431,6 +438,17 @@ cleanup_stages
 source_snapshot=''
 trap - EXIT
 
+alpm_hook_source="$TARGET_ROOT/alpm/90-omen-acpi-refresh.hook"
+alpm_hook_target="/usr/share/libalpm/hooks/90-omen-acpi-refresh.hook"
+if [[ -f "$alpm_hook_source" && ! -L "$alpm_hook_source" ]]; then
+    if [[ -d /usr/share/libalpm/hooks && ! -L /usr/share/libalpm/hooks ]]; then
+        install -o root -g root -m 0644 "$alpm_hook_source" "$alpm_hook_target" \
+            || warn "Could not install the ALPM refresh hook at $alpm_hook_target."
+    else
+        warn "ALPM hooks directory is absent; run 'omen-acpi refresh' after kernel or Limine updates."
+    fi
+fi
+
 for variant in s5 combined; do
     state="/var/lib/omen-acpi-${variant}-test"
     if [[ -d "$state" && ! -L "$state" ]]; then
@@ -451,5 +469,6 @@ fi
 printf 'Run it as your normal user:\n\n'
 printf '  omen-acpi\n\n'
 printf 'The guided CLI will check the machine, boot state and dependencies.\n'
-printf 'Run "omen-acpi refresh" after kernel/initramfs or Limine updates.\n'
+printf 'Run "omen-acpi refresh" after kernel/initramfs or Limine updates if the ALPM hook is not present.\n'
 printf 'Existing v2.2.0 single-kernel state is migrated by the same command without rebuilding AML.\n'
+printf 'Refresh also rewrites pre-2.5.0 experimental Limine titles to the current names.\n'

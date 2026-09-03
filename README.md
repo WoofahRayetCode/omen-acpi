@@ -156,10 +156,11 @@ Combined also completed the checked boot without the related `WQBZ`, `WQBE` or
 `AE_AML_BUFFER_LIMIT` messages. The standard/LTS entry lifecycle and one
 Combined LTS boot were checked with v2.3.0; S5-only on LTS was not boot-tested.
 
-Version 2.4.0 changes procedural structure and release metadata only. Its ACPI
-transformers and AML round-trip verifiers are byte-identical to v2.3.0, so the
-v2.3.0 hardware observations remain the applicable baseline; no broader
-hardware compatibility is claimed.
+Version 2.5.0 changes Limine titles, selected-entry comments, stock-preservation
+checks and kernel-update refresh automation only. Its ACPI transformers and AML
+round-trip verifiers are byte-identical to v2.4.0 and v2.3.0, so the v2.3.0
+hardware observations remain the applicable baseline; no broader hardware
+compatibility is claimed.
 
 The full distinction between real-hardware observations, automated fixtures and
 untested cases is in [`docs/validation.md`](docs/validation.md).
@@ -329,9 +330,13 @@ The toolkit adds entries; it does not replace the normal ones.
 | `linux-cachyos`                                                | normal standard-kernel entry                                                            |
 | `linux-cachyos-lts`                                            | normal LTS entry, when installed                                                        |
 | `linux-cachyos-fallback`, `linux-cachyos-lts-fallback`         | normal fallbacks; detected but not cloned                                               |
-| `zz-omen-acpi-s5-test`, `zz-omen-acpi-s5-test-lts`             | S5-only override for standard/LTS                                                       |
-| `zz-omen-acpi-combined-test`, `zz-omen-acpi-combined-test-lts` | Combined override for standard/LTS                                                      |
-| `zz-omen-acpi-stock-recovery`                                  | emergency entry created from the trusted snapshot only when the normal entry is missing |
+| `zz-OMEN ACPI S5`, `zz-OMEN ACPI S5 LTS`                       | S5-only override for standard/LTS                                                       |
+| `zz-OMEN ACPI Combined`, `zz-OMEN ACPI Combined LTS`           | Combined override for standard/LTS                                                      |
+| `zz-OMEN ACPI stock recovery`                                  | emergency entry created from the trusted snapshot only when the normal entry is missing |
+
+Pre-2.5.0 titles (`zz-omen-acpi-s5-test` and the other machine-id names) remain
+recognised. `omen-acpi refresh` rewrites them to the labels above. The `zz-`
+prefix keeps the experimental entries after the stock `linux-cachyos*` names.
 
 Each experimental entry reuses the stock kernel and ordered stock initramfs
 paths and prepends one variant-specific ACPI early CPIO.
@@ -386,6 +391,14 @@ After a kernel, initramfs or Limine update, reconcile the owned entries:
 ```bash
 omen-acpi refresh all
 ```
+
+On CachyOS/Arch, the installer also places an ALPM hook that runs this refresh
+after relevant package transactions: `linux-cachyos` / LTS (and their
+NVIDIA-open and headers packages), `mkinitcpio`, Limine-related packages,
+`nvidia-utils`, and any `*-dkms` / `*-dkms-git` module. That covers DKMS
+installs that rebuild initramfs without upgrading the kernel package itself.
+The hook never aborts pacman and never repairs modified or conflicting state;
+if it reports a warning, run the command above from a stock boot.
 
 Refresh adds a newly installed standard/LTS entry, updates changed references
 and removes only obsolete owned entries. Modified or mixed state is reported as
@@ -456,7 +469,7 @@ firmware behavior or validate another machine.
 - [`docs/validation.md`](docs/validation.md): hardware observations and
   synthetic-test boundary.
 
-Repository-only documentation is not included in the v2.4.0 release archive.
+Repository-only documentation is not included in the packaged release archive.
 This README retains the installation, stock-return, recovery-limit and removal
 information required to operate the packaged toolkit.
 

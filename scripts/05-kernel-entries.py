@@ -284,11 +284,50 @@ def validated_sources(text: str, esp: Path) -> tuple[dict[str, dict], dict[str, 
 
 # Managed entry format and ownership
 
+CURRENT_TITLES = {
+    "s5": {
+        "linux-cachyos": "zz-OMEN ACPI S5",
+        "linux-cachyos-lts": "zz-OMEN ACPI S5 LTS",
+    },
+    "combined": {
+        "linux-cachyos": "zz-OMEN ACPI Combined",
+        "linux-cachyos-lts": "zz-OMEN ACPI Combined LTS",
+    },
+}
+LEGACY_TITLES = {
+    "s5": {
+        "linux-cachyos": "zz-omen-acpi-s5-test",
+        "linux-cachyos-lts": "zz-omen-acpi-s5-test-lts",
+    },
+    "combined": {
+        "linux-cachyos": "zz-omen-acpi-combined-test",
+        "linux-cachyos-lts": "zz-omen-acpi-combined-test-lts",
+    },
+}
+
+
 def variant_names(variant: str) -> dict[str, str]:
-    if variant not in ("s5", "combined"):
+    if variant not in CURRENT_TITLES:
         raise Failure(f"unsupported variant: {variant}")
-    base = f"zz-omen-acpi-{variant}-test"
-    return {"linux-cachyos": base, "linux-cachyos-lts": f"{base}-lts"}
+    return dict(CURRENT_TITLES[variant])
+
+
+def legacy_variant_names(variant: str) -> dict[str, str]:
+    if variant not in LEGACY_TITLES:
+        raise Failure(f"unsupported variant: {variant}")
+    return dict(LEGACY_TITLES[variant])
+
+
+def reserved_titles(variant: str) -> set[str]:
+    return set(variant_names(variant).values()) | set(legacy_variant_names(variant).values())
+
+
+def entry_comment(variant: str) -> str:
+    if variant == "s5":
+        return "Experimental S5 GPU power-off override. Stock CachyOS entry unchanged."
+    if variant == "combined":
+        return "Experimental S5 override plus WQBZ buffer bounds. Stock CachyOS entry unchanged."
+    raise Failure(f"unsupported variant: {variant}")
 
 
 def owner_marker(variant: str, kernel_id: str) -> str:
@@ -315,9 +354,15 @@ def entry_record(variant: str, source: dict, early_path: str) -> dict:
 
 def render_entry(record: dict) -> list[str]:
     indent = " " * 4
+    owner = re.fullmatch(
+        r"omen-acpi-owned=v1 variant=(s5|combined) kernel=(linux-cachyos(?:-lts)?)",
+        record["owner"],
+    )
+    if owner is None:
+        raise Failure("owned Limine record is missing a valid ownership marker")
     lines = [
         "/" * record["level"] + record["title"],
-        f"{indent}comment: EXPERIMENTAL OMEN ACPI {record['kernel_id']}; stock entry unchanged",
+        f"{indent}comment: {entry_comment(owner.group(1))}",
         f"{indent}comment: {record['owner']}",
         f"{indent}protocol: linux",
         f"{indent}kernel_path: {record['kernel_path']}",
@@ -369,9 +414,49 @@ def load_manifest(state: Path, variant: str) -> dict | None:
     return data
 
 
+def limine_globals(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if ENTRY_RE.match(line):
+            break
+        match = OPTION_RE.match(line)
+        if match is None:
+            continue
+        key = match.group(1).lower()
+        if key in values:
+            raise Failure(f"duplicate Limine global option: {key}")
+        values[key] = match.group(2)
+    return values
+
+
+def supported_stock_fingerprint(text: str) -> dict[str, tuple]:
+    primary, fallback = supported_entries(text)
+    blocks: dict[str, tuple] = {}
+    for mapping in (primary, fallback):
+        for kernel_id, item in mapping.items():
+            kernel, command, modules = boot_fields(item)
+            blocks[kernel_id] = (
+                item["title"],
+                item["level"],
+                item["parent"],
+                kernel,
+                command,
+                tuple(modules),
+                tuple(item["comments"]),
+            )
+    return blocks
+
+
+def assert_stock_preserved(original: str, updated: str) -> None:
+    if limine_globals(original) != limine_globals(updated):
+        raise Failure("Limine global options were modified")
+    if supported_stock_fingerprint(original) != supported_stock_fingerprint(updated):
+        raise Failure("stock CachyOS Limine entries were modified")
+
+
 def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespace: tuple[int, int | None]) -> list[dict]:
     entries = parse_entries(text)
-    names = set(variant_names(variant).values())
+    names = reserved_titles(variant)
     candidates = [
         item
         for item in entries
@@ -527,6 +612,7 @@ def sync(esp: Path, state: Path, variant: str) -> None:
         for kernel_id, source in primary.items()
     }
     updated = rebuild_config(original, owned, records)
+    assert_stock_preserved(original, updated)
     data = {
         "schema": SCHEMA,
         "variant": variant,
@@ -591,6 +677,7 @@ def remove(esp: Path, state: Path, variant: str) -> None:
     while len(updated_lines) >= 2 and not updated_lines[-1] and not updated_lines[-2]:
         updated_lines.pop()
     updated = "\n".join(updated_lines) + ("\n" if trailing else "")
+    assert_stock_preserved(original, updated)
     target = managed_payload_directory(esp, variant, create=False) / "early.cpio"
     regular(target)
     if sha256(target) != manifest["early_sha256"]:

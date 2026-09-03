@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.5.0 - 2026-09-02
+
+- Renames experimental Limine titles to human-readable labels while keeping the
+  `zz-` sort prefix so they still appear after `linux-cachyos*`:
+  `zz-OMEN ACPI S5`, `zz-OMEN ACPI S5 LTS`, `zz-OMEN ACPI Combined`,
+  `zz-OMEN ACPI Combined LTS`, and `zz-OMEN ACPI stock recovery`.
+- Treats the previous `zz-omen-acpi-*-test` titles as aliases. `omen-acpi refresh`
+  rewrites owned entries in place; uninstall and pre-uninstall still recognise
+  both old and new names. Italian legacy recognition strings are unchanged.
+- Replaces the selected-entry `comment:` subtitle with a short description of
+  the S5 or Combined override and that the stock CachyOS entry is unchanged.
+- Proves after every multi-kernel sync or removal that Limine global options
+  (`default_entry`, `timeout`, and any other header options) and the supported
+  stock CachyOS entry bodies are byte-identical to the pre-change configuration.
+- Installs an ALPM PostTransaction hook that fail-soft refreshes owned entries
+  after kernel, LTS, NVIDIA-open, headers, mkinitcpio, Limine, `nvidia-utils`
+  and `*-dkms` / `*-dkms-git` package transactions. DKMS module installs that
+  rebuild initramfs without touching the kernel package are covered so S5 and
+  Combined Limine BLAKE2 hashes do not go stale. Conflicts are reported, never
+  repaired automatically, and never abort pacman.
+- Makes `omen-acpi doctor --fix` refresh stale managed entries.
+- Leaves the S5 and Combined ACPI transformers, AML verifiers and OEM revisions
+  byte-identical to v2.4.0 / v2.3.0.
+
 ## 2.4.0 - 2026-08-14
 
 - Clears a successfully resumed workflow's pending marker while preserving it

@@ -73,6 +73,8 @@ contains "$(<"$confirmation")" 'Continue with the Combined experimental setup?' 
 [[ ! -e "$work/actions" ]] || fail "negative confirmation allowed a modification"
 
 prepare_stock_recovery() { printf 'recovery-write\n' >> "$work/install-order-actions"; }
+ensure_admin() { :; }
+run_logged() { return 1; }
 for schema in managed conflict; do
     : > "$work/install-order-actions"
     TEST_SCHEMA="$schema"
@@ -122,7 +124,7 @@ legacy_output="$(recover_stock 2>&1)"
 contains "$legacy_output" '2.1.10 recovery snapshot is untrusted for boot and will be preserved' \
     "legacy recovery did not explain that the snapshot is preserved"
 contains "$legacy_output" 'choose recovery option 1' \
-    "legacy recovery omitted the post-boot 2.4.0 refresh instruction"
+    "legacy recovery omitted the post-boot 2.5.0 refresh instruction"
 [[ "$(<"$work/legacy-actions")" == $'manager-recover\nstock-reboot-prompt' ]] \
     || fail "legacy recovery did not reach the verified normal-entry reboot prompt"
 

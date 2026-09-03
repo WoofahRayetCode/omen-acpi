@@ -136,10 +136,15 @@ class KernelEntriesTest(unittest.TestCase):
         first = (self.esp / "limine.conf").read_bytes()
         self.sync()
         self.assertEqual((self.esp / "limine.conf").read_bytes(), first)
-        self.assertEqual(self.managed_titles(), ["zz-omen-acpi-s5-test"])
+        self.assertEqual(self.managed_titles(), ["zz-OMEN ACPI S5"])
         self.assertIn(before_stock, first.decode())
         self.assertIn("module_path: boot():/omen-acpi/s5/early.cpio#", first.decode())
-        self.assertEqual(first.decode().count("zz-omen-acpi-s5-test"), 1)
+        self.assertEqual(first.decode().count("zz-OMEN ACPI S5"), 1)
+        self.assertIn("default_entry: 1", first.decode())
+        self.assertIn(
+            "Experimental S5 GPU power-off override. Stock CachyOS entry unchanged.",
+            first.decode(),
+        )
 
     def test_lts_only_and_both_kernels_get_separate_entries(self):
         self.write_stock(("linux-cachyos-lts",), fallbacks=("linux-cachyos-lts",))
@@ -150,7 +155,7 @@ class KernelEntriesTest(unittest.TestCase):
             )
         )
         self.sync()
-        self.assertEqual(self.managed_titles(), ["zz-omen-acpi-s5-test-lts"])
+        self.assertEqual(self.managed_titles(), ["zz-OMEN ACPI S5 LTS"])
         output = io.StringIO()
         with redirect_stdout(output):
             entries.status(self.esp, self.state, "s5")
@@ -166,7 +171,7 @@ class KernelEntriesTest(unittest.TestCase):
         self.sync()
         self.assertEqual(
             self.managed_titles(),
-            ["zz-omen-acpi-s5-test", "zz-omen-acpi-s5-test-lts"],
+            ["zz-OMEN ACPI S5", "zz-OMEN ACPI S5 LTS"],
         )
 
     def test_lts_add_update_and_remove_are_reconciled_without_duplicates(self):
@@ -175,7 +180,7 @@ class KernelEntriesTest(unittest.TestCase):
         old_standard = old["entries"]["linux-cachyos"]
 
         current = (self.esp / "limine.conf").read_text()
-        owned_start = current.index("//zz-omen-acpi-s5-test")
+        owned_start = current.index("//zz-OMEN ACPI S5")
         owned = current[owned_start : current.index("//Snapshots")]
         self.write_stock(("linux-cachyos", "linux-cachyos-lts"), extra=owned)
         self.sync()
@@ -208,7 +213,7 @@ class KernelEntriesTest(unittest.TestCase):
         del lines[lts["start"] : lts["end"]]
         (self.esp / "limine.conf").write_text("\n".join(lines) + "\n")
         self.sync()
-        self.assertEqual(self.managed_titles(), ["zz-omen-acpi-s5-test"])
+        self.assertEqual(self.managed_titles(), ["zz-OMEN ACPI S5"])
 
     def test_combined_coexists_and_remove_preserves_every_stock_entry(self):
         self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
@@ -402,7 +407,36 @@ refresh_action
         self.assertTrue((old_state / "kernel-entries.json").is_file())
         self.assertFalse(dropin.exists())
         self.assertFalse((old_state / "kernel.img").exists())
-        self.assertEqual(self.managed_titles(), ["zz-omen-acpi-s5-test"])
+        self.assertEqual(self.managed_titles(), ["zz-OMEN ACPI S5"])
+
+    def test_legacy_titles_are_migrated_and_globals_stay_put(self):
+        self.sync()
+        current = (self.esp / "limine.conf").read_text()
+        migrated = current.replace("zz-OMEN ACPI S5", "zz-omen-acpi-s5-test")
+        (self.esp / "limine.conf").write_text(migrated)
+        manifest = json.loads((self.state / "kernel-entries.json").read_text())
+        manifest["entries"]["linux-cachyos"]["title"] = "zz-omen-acpi-s5-test"
+        (self.state / "kernel-entries.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        self.assertEqual(entries.status(self.esp, self.state, "s5"), 3)
+        self.sync()
+        updated = (self.esp / "limine.conf").read_text()
+        self.assertEqual(self.managed_titles(), ["zz-OMEN ACPI S5"])
+        self.assertNotIn("//zz-omen-acpi-s5-test\n", updated)
+        self.assertIn("default_entry: 1", updated)
+        self.assertEqual(
+            entries.limine_globals(current),
+            entries.limine_globals(updated),
+        )
+        self.assertEqual(
+            entries.supported_stock_fingerprint(current),
+            entries.supported_stock_fingerprint(updated),
+        )
+
+    def test_stock_preservation_rejects_default_entry_edits(self):
+        original = (self.esp / "limine.conf").read_text()
+        tampered = original.replace("default_entry: 1", "default_entry: 2", 1)
+        with self.assertRaises(entries.Failure):
+            entries.assert_stock_preserved(original, tampered)
 
 
 if __name__ == "__main__":

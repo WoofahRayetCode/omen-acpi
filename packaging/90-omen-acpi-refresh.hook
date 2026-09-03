@@ -1,0 +1,31 @@
+# Fail-soft PostTransaction refresh for owned experimental Limine entries.
+# Kernel / mkinitcpio / Limine-entry packages rewrite stock paths and BLAKE2
+# hashes. DKMS modules, headers, nvidia-utils and Limine itself often rebuild
+# initramfs as a side effect without touching those packages; include them so
+# S5/Combined entries do not go stale after such transactions.
+# Conflicts are reported by the helper; this hook never aborts pacman.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = linux-cachyos
+Target = linux-cachyos-lts
+Target = linux-cachyos-nvidia-open
+Target = linux-cachyos-lts-nvidia-open
+Target = linux-cachyos-headers
+Target = linux-cachyos-lts-headers
+Target = mkinitcpio
+Target = limine
+Target = limine-mkinitcpio-hook
+Target = limine-entry-tool
+Target = limine-snapper-sync
+Target = nvidia-utils
+Target = *-dkms
+Target = *-dkms-git
+
+[Action]
+Description = Reconcile OMEN ACPI experimental Limine entries
+When = PostTransaction
+Exec = /usr/local/lib/omen-acpi-fix/scripts/06-alpm-refresh.sh

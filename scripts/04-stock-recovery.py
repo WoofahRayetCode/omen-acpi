@@ -26,11 +26,13 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "2.4.0"
-OWNED_SNAPSHOT_VERSIONS = {"2.1.10", "2.1.11", "2.2.0", "2.3.0", "2.4.0"}
-TRUSTED_SNAPSHOT_VERSIONS = {"2.1.11", "2.2.0", "2.3.0", "2.4.0"}
+VERSION = "2.5.0"
+OWNED_SNAPSHOT_VERSIONS = {"2.1.10", "2.1.11", "2.2.0", "2.3.0", "2.4.0", "2.5.0"}
+TRUSTED_SNAPSHOT_VERSIONS = {"2.1.11", "2.2.0", "2.3.0", "2.4.0", "2.5.0"}
 SCHEMA = 1
-ENTRY = "zz-omen-acpi-stock-recovery"
+ENTRY = "zz-OMEN ACPI stock recovery"
+LEGACY_ENTRY = "zz-omen-acpi-stock-recovery"
+RESERVED_ENTRIES = (ENTRY, LEGACY_ENTRY)
 BEGIN = "# BEGIN OMEN-ACPI OWNED STOCK RECOVERY v1"
 END = "# END OMEN-ACPI OWNED STOCK RECOVERY v1"
 EXPECTED = ("OMEN Gaming Laptop 16-ap0xxx", "8E35", "F.13")
@@ -894,16 +896,51 @@ def prepare() -> None:
         if path_present(state_stage): shutil.rmtree(state_stage)
 
 
-def owned_block(data: dict) -> str:
+def owned_block(data: dict, title: str = ENTRY) -> str:
     marker = data["snapshot_id"]
     command = data["command_line"]
     command = (command + " " if command else "") + f"omen_acpi.stock_recovery={marker}"
-    lines = [BEGIN, f"/{ENTRY}", "    protocol: linux",
+    lines = [BEGIN, f"/{title}", "    protocol: linux",
              "    kernel_path: boot():/omen-acpi-stock-recovery/kernel.bin"]
     for index in range(len(data["original_module_paths"])):
         lines.append(f"    module_path: boot():/omen-acpi-stock-recovery/module-{index:03}.bin")
     lines.extend((f"    cmdline: {command}", f"    comment: owned-snapshot={marker}", END))
     return "\n".join(lines)
+
+
+def reserved_recovery_entries(text: str) -> list[dict]:
+    return [item for item in parse_limine_entries(text) if item["title"] in RESERVED_ENTRIES]
+
+
+def matching_owned_block(text: str, data: dict) -> tuple[str | None, str | None]:
+    reserved = reserved_recovery_entries(text)
+    if len(reserved) > 1:
+        raise Failure("multiple reserved recovery entries exist")
+    for title in RESERVED_ENTRIES:
+        block = owned_block(data, title)
+        if text.count(block) == 1:
+            return block, title
+    return None, None
+
+
+def limine_globals(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if ENTRY_RE.match(line):
+            break
+        match = OPTION_RE.match(line)
+        if match is None:
+            continue
+        key = match.group(1).lower()
+        if key in values:
+            raise Failure(f"duplicate Limine global option: {key}")
+        values[key] = match.group(2)
+    return values
+
+
+def assert_stock_globals_preserved(original: str, updated: str) -> None:
+    if limine_globals(original) != limine_globals(updated):
+        raise Failure("Limine global options were modified")
 
 
 def recover() -> None:
@@ -920,18 +957,19 @@ def recover() -> None:
         return
     initial_snapshot = load_trusted_snapshot_record(esp)
     data = initial_snapshot[0]
-    parsed = parse_limine_entries(text)
-    reserved = [item for item in parsed if item["title"] == ENTRY]
+    reserved = reserved_recovery_entries(text)
     if len(reserved) > 1:
         raise Failure("multiple reserved recovery entries exist")
-    block = owned_block(data)
+    block, title = matching_owned_block(text, data)
     marker_count = text.count(BEGIN) + text.count(END)
     if reserved or marker_count:
-        if marker_count != 2 or text.count(block) != 1:
+        if marker_count != 2 or block is None:
             raise Failure("reserved recovery entry is modified or not owned by this snapshot")
-        print(f"READY\t{ENTRY}")
+        print(f"READY\t{title}")
         return
+    block = owned_block(data)
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
+    assert_stock_globals_preserved(text, new_text)
     installed_bytes = new_text.encode("utf-8")
     stage = config.with_name(f".{config.name}.omen-recovery.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-recovery-backup.{os.getpid()}")
@@ -1024,18 +1062,21 @@ def remove() -> None:
     if initial_snapshot is None:
         raise Failure("managed recovery snapshot is missing")
     data = initial_snapshot[0]
-    block = owned_block(data)
-    reserved = [item for item in parse_limine_entries(text) if item["title"] == ENTRY]
+    reserved = reserved_recovery_entries(text)
+    block, _title = matching_owned_block(text, data)
     if len(reserved) > 1 or text.count(BEGIN) != text.count(END) or text.count(BEGIN) > 1:
         raise Failure("reserved recovery ownership markers are ambiguous")
-    if reserved and (BEGIN not in text or text.count(block) != 1):
+    if reserved and (BEGIN not in text or block is None):
         raise Failure("reserved recovery entry is foreign or modified")
-    if BEGIN in text and (len(reserved) != 1 or text.count(block) != 1):
+    if BEGIN in text and (len(reserved) != 1 or block is None):
         raise Failure("reserved recovery entry was modified")
     if not reserved and (BEGIN in text or END in text or
                          "boot():/omen-acpi-stock-recovery" in text):
         raise Failure("foreign recovery ownership marker or payload reference exists")
-    new_text = text.replace("\n\n" + block + "\n", "\n").replace(block + "\n", "")
+    new_text = text
+    if block is not None:
+        new_text = text.replace("\n\n" + block + "\n", "\n").replace(block + "\n", "")
+    assert_stock_globals_preserved(text, new_text)
     installed_bytes = new_text.encode("utf-8")
     stage = config.with_name(f".{config.name}.omen-remove.{os.getpid()}")
     backup = config.with_name(f".{config.name}.omen-remove-backup.{os.getpid()}")
@@ -1097,8 +1138,8 @@ def remove() -> None:
         if verified != installed_bytes:
             raise Failure("Limine configuration bytes changed during removal commit")
         verified_text = verified.decode("utf-8", errors="strict")
-        if (ENTRY in verified_text or BEGIN in verified_text or END in verified_text or
-                "boot():/omen-acpi-stock-recovery" in verified_text):
+        if (any(name in verified_text for name in RESERVED_ENTRIES) or BEGIN in verified_text
+                or END in verified_text or "boot():/omen-acpi-stock-recovery" in verified_text):
             raise Failure("post-removal verification failed")
         # Detach plus verified config is the commit point. Leftovers are safe,
         # hidden and explicitly reported if non-essential cleanup fails.
@@ -1244,13 +1285,14 @@ def status() -> None:
             except (Failure, OSError, UnicodeError, ValueError, KeyError, TypeError):
                 snapshot_state = "modified"
 
-        reserved = [item for item in parse_limine_entries(text) if item["title"] == ENTRY]
+        reserved = reserved_recovery_entries(text)
         if not reserved and BEGIN not in text and END not in text:
             recovery_state = "missing"
         elif len(reserved) != 1 or text.count(BEGIN) != 1 or text.count(END) != 1 or data is None:
             recovery_state = "modified"
         else:
-            if text.count(owned_block(data)) != 1:
+            block, _title = matching_owned_block(text, data)
+            if block is None:
                 recovery_state = "modified"
             elif data["toolkit_version"] in TRUSTED_SNAPSHOT_VERSIONS:
                 recovery_state = "available"

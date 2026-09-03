@@ -9,7 +9,7 @@ trusted snapshot have been lost.
 That distinction determines the whole state machine: first preserve a verified
 stock route, then test an override, and never treat a variant initramfs or an old
 configuration backup as stock evidence. This document derives the corresponding
-states and transaction rules implemented by OMEN ACPI Toolkit v2.4.0. The
+states and transaction rules implemented by OMEN ACPI Toolkit v2.5.0. The
 minimum safe workflow remains in the packaged `README.md`.
 
 ## Components and status
@@ -19,7 +19,8 @@ The preventive snapshot consists of one indivisible managed pair:
 - reserved ESP payload directory `boot():/omen-acpi-stock-recovery/`;
 - root-owned manifest directory `/var/lib/omen-acpi-stock-recovery`.
 
-The optional Limine entry is named `zz-omen-acpi-stock-recovery`. It is created
+The optional Limine entry is named `zz-OMEN ACPI stock recovery`. The previous
+`zz-omen-acpi-stock-recovery` title remains recognised for owned snapshots. It is created
 only when the normal stock entry is missing and a current trusted snapshot can
 be verified. It points exclusively at the reserved copies.
 
@@ -127,7 +128,7 @@ snapshot remains, external recovery media is required.
    stock-source validation, it preserves every stock entry and offers the same confirmed reboot as
    `reboot-stock`.
 3. If the normal entry is gone, it verifies the complete current trusted
-   snapshot and creates only `zz-omen-acpi-stock-recovery`. Other entries,
+   snapshot and creates only `zz-OMEN ACPI stock recovery`. Other entries,
    global settings, comments, order and default remain unchanged. Reboot still
    requires confirmation and names the entry to select.
 

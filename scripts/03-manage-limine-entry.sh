@@ -10,7 +10,7 @@ export PATH="/usr/bin:/bin"
 # Manage separate S5-only and combined Limine entries for the reference or an
 # explicitly opted-in machine. The normal CachyOS entry is never replaced.
 
-readonly VERSION="2.4.0"
+readonly VERSION="2.5.0"
 readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
 readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -2629,7 +2629,13 @@ inspect_action() {
     fi
 
     printf 'SCHEMA=%s\n' "$schema"
-    [[ "$schema" != "conflict" ]] || return 3
+    if [[ "$schema" == "conflict" ]]; then
+        reason="$(awk -F '\t' -v variant="$VARIANT" \
+            '$1 == "VARIANT" && $2 == variant && $3 == "conflict" { print $4; exit }' \
+            <<<"${output:-}")"
+        [[ -z "$reason" ]] || printf 'REASON=%s\n' "$reason"
+        return 3
+    fi
 }
 
 remove_legacy_action() {
@@ -2828,12 +2834,20 @@ pre_uninstall_check_action() {
         die "Managed multi-kernel payloads still exist at $esp/omen-acpi. Remove every variant before uninstall."
     fi
 
-    for entry_name in \
-        zz-omen-acpi-s5-test \
-        zz-omen-acpi-s5-test-lts \
-        zz-omen-acpi-combined-test \
-        zz-omen-acpi-combined-test-lts \
-        zz-omen-acpi-stock-recovery; do
+    local reserved_titles=(
+        "zz-omen-acpi-s5-test"
+        "zz-omen-acpi-s5-test-lts"
+        "zz-omen-acpi-combined-test"
+        "zz-omen-acpi-combined-test-lts"
+        "zz-omen-acpi-stock-recovery"
+        "zz-OMEN ACPI S5"
+        "zz-OMEN ACPI S5 LTS"
+        "zz-OMEN ACPI Combined"
+        "zz-OMEN ACPI Combined LTS"
+        "zz-OMEN ACPI stock recovery"
+    )
+    local entry_name
+    for entry_name in "${reserved_titles[@]}"; do
         if grep -Eq -- "^[[:space:]]*/+\\+?${entry_name}[[:space:]]*$" "$config"; then
             die "Reserved Limine entry is still present: $entry_name"
         fi

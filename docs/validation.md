@@ -14,13 +14,13 @@ recorded on 4 and 9 August 2026. Automated fixtures exercise destructive,
 corrupt and concurrent states without reproducing them on the physical machine.
 An absent test on other hardware means **not validated**, not expected to work.
 
-The v2.4.0 reference-machine transformations and AML round-trip verifiers are
-byte-identical to v2.3.0; the generated S5-only and Combined AML remains
-byte-identical to v2.1.11 from the same stock DSDT. Real-hardware boot and
-shutdown results were established with v2.1.11 and the standard/LTS lifecycle
-with v2.3.0. Version 2.4.0 changes procedural structure and release metadata
-without changing those executable paths, so no new physical validation was
-required.
+The v2.5.0, v2.4.0 and v2.3.0 reference-machine transformations and AML
+round-trip verifiers are byte-identical; the generated S5-only and Combined AML
+remains byte-identical to v2.1.11 from the same stock DSDT. Real-hardware boot
+and shutdown results were established with v2.1.11 and the standard/LTS
+lifecycle with v2.3.0. Version 2.5.0 changes Limine titles, comments,
+stock-preservation checks and kernel-update refresh automation without changing
+those executable ACPI paths, so no new physical validation was required.
 
 ## Reference hardware
 
@@ -78,6 +78,7 @@ table or full terminal transcript is part of this record.
 | NVDE audit tool | `./docs/nvde-audit.py --self-test` | **PASS — automated fixture** | Preserves the documented AML analysis; no hardware access |
 | Release manifest, archive and updater verification | Automated build fixtures | **PASS — automated fixture** | Verifies candidate bytes and non-installing `--verify-only` behaviour |
 | v2.4.0 equivalence audit | Diff review, local suite and GitHub Actions | **PASS — transformations, AML verifiers, patches and transform fixtures unchanged from v2.3.0** | No new physical hardware execution |
+| v2.5.0 equivalence audit | Diff review and local suite | **PASS — transformations, AML verifiers, patches and transform fixtures unchanged from v2.4.0 / v2.3.0** | Limine titles, comments, stock-preservation checks and the ALPM hook (including DKMS / headers / `nvidia-utils` triggers) are new; no new physical hardware execution |
 
 ## Synthetic-only scenarios
 
@@ -115,6 +116,7 @@ non-installing updater verification to pass from a clean tree. Version 2.3.0
 additionally required the standard/LTS status to remain current without
 changing either ACPI transformation. Version 2.4.0 additionally requires its
 ACPI transformers, AML verifiers, normalized patches and transformation
-fixtures to remain identical to v2.3.0. Combined-on-LTS validation does not
+fixtures to remain identical to v2.3.0. Version 2.5.0 additionally requires
+those same ACPI paths to remain identical to v2.4.0. Combined-on-LTS validation does not
 imply S5-on-LTS validation. No non-reference hardware has been physically
 validated.

@@ -23,6 +23,29 @@ fail() {
 }
 
 printf 'syntax checks...\n'
+[[ -x "$ROOT/scripts/06-alpm-refresh.sh" ]] \
+    || fail "ALPM refresh helper is not executable"
+grep -Fq 'Exec = /usr/local/lib/omen-acpi-fix/scripts/06-alpm-refresh.sh' \
+    "$ROOT/packaging/90-omen-acpi-refresh.hook" \
+    || fail "ALPM hook does not call the installed refresh helper"
+for required_target in \
+    'Target = linux-cachyos' \
+    'Target = linux-cachyos-lts' \
+    'Target = linux-cachyos-headers' \
+    'Target = linux-cachyos-lts-headers' \
+    'Target = mkinitcpio' \
+    'Target = limine' \
+    'Target = limine-mkinitcpio-hook' \
+    'Target = limine-entry-tool' \
+    'Target = limine-snapper-sync' \
+    'Target = nvidia-utils' \
+    'Target = *-dkms' \
+    'Target = *-dkms-git'; do
+    grep -Fxq "$required_target" "$ROOT/packaging/90-omen-acpi-refresh.hook" \
+        || fail "ALPM hook is missing required trigger: $required_target"
+done
+OMEN_ACPI_MANAGER="$work/missing-manager" "$ROOT/scripts/06-alpm-refresh.sh" \
+    || fail "ALPM helper failed when the manager is absent"
 for script in \
     "$ROOT/omen-acpi" \
     "$ROOT/install.sh" \
@@ -102,7 +125,7 @@ import re
 import sys
 
 root = Path(sys.argv[1])
-expected = "2.4.0"
+expected = "2.5.0"
 for relative in ("install.sh", "omen-acpi", "scripts/03-manage-limine-entry.sh"):
     values = re.findall(r'^readonly VERSION="([0-9.]+)"$', (root / relative).read_text(), re.MULTILINE)
     if values != [expected]:
@@ -210,9 +233,9 @@ for removed_command in migrate restore-legacy; do
     fi
 done
 [[ "$(OMEN_ACPI_TESTING=1 HOME="$work/home" "$ROOT/omen-acpi" --plain version)" \
-    == 'OMEN ACPI Toolkit 2.4.0' ]] || fail "CLI version"
+    == 'OMEN ACPI Toolkit 2.5.0' ]] || fail "CLI version"
 [[ "$(OMEN_ACPI_TESTING=1 HOME="$work/home" "$ROOT/omen-acpi" version --plain)" \
-    == 'OMEN ACPI Toolkit 2.4.0' ]] || fail "global option after command"
+    == 'OMEN ACPI Toolkit 2.5.0' ]] || fail "global option after command"
 
 for invalid_case in \
     'setup invalid' \
@@ -1150,7 +1173,11 @@ for kind in directory broken-symlink; do
     if [[ -L "$payload" ]]; then rm -f -- "$payload"; else rm -rf -- "$payload"; fi
 done
 
-for entry_name in zz-omen-acpi-s5-test-lts zz-omen-acpi-combined-test-lts; do
+for entry_name in \
+    zz-omen-acpi-s5-test-lts \
+    zz-omen-acpi-combined-test-lts \
+    "zz-OMEN ACPI S5 LTS" \
+    "zz-OMEN ACPI Combined LTS"; do
     printf 'timeout: 5\n/CachyOS\n//%s\n' "$entry_name" \
         > "$pre_uninstall_fixture/esp/limine.conf"
     if TEST_ESP="$pre_uninstall_fixture/esp" \
@@ -1212,19 +1239,19 @@ version_fixture="$work/version-mismatch"
 mkdir -p "$version_fixture"
 cp -a "$ROOT/.github" "$ROOT/.gitignore" "$ROOT/CHANGELOG.md" "$ROOT/LICENSE" \
     "$ROOT/README.md" "$ROOT/SECURITY.md" "$ROOT/install.sh" "$ROOT/omen-acpi" \
-    "$ROOT/patches" "$ROOT/scripts" "$ROOT/tests" "$ROOT/tools" \
+    "$ROOT/packaging" "$ROOT/patches" "$ROOT/scripts" "$ROOT/tests" "$ROOT/tools" \
     "$ROOT/uninstall.sh" "$ROOT/update.sh" "$ROOT/SHA256SUMS" "$version_fixture/"
-sed -i 's/^VERSION = "2.4.0"$/VERSION = "9.9.9"/' \
+sed -i 's/^VERSION = "2.5.0"$/VERSION = "9.9.9"/' \
     "$version_fixture/scripts/04-stock-recovery.py"
 if "$version_fixture/tools/make-release.sh" "$work" >"$work/version-build.out" 2>"$work/version-build.err"; then
     fail "release builder accepted a divergent Python manager version"
 fi
-grep -Fq 'scripts/04-stock-recovery.py does not declare version 2.4.0' "$work/version-build.err" \
+grep -Fq 'scripts/04-stock-recovery.py does not declare version 2.5.0' "$work/version-build.err" \
     || fail "release builder did not diagnose the Python manager mismatch"
 
 release_output="$work/release-utc"
 release_output_rome="$work/release-europe-rome"
-release_archive='omen-acpi-toolkit-v2.4.0.tar.gz'
+release_archive='omen-acpi-toolkit-v2.5.0.tar.gz'
 mkdir -p "$release_output" "$release_output_rome" "$work/verify-home"
 TZ=UTC "$ROOT/tools/make-release.sh" "$release_output" \
     >"$work/release-build-utc.out"
@@ -1264,19 +1291,19 @@ fi
 mismatch_root="$work/updater-version-mismatch"
 mkdir -p "$mismatch_root/extracted" "$mismatch_root/assets" "$work/mismatch-home"
 tar -xzf "$release_output/$release_archive" -C "$mismatch_root/extracted"
-mismatch_release="$mismatch_root/extracted/omen-acpi-toolkit-v2.4.0"
-sed -i 's/^VERSION = "2.4.0"$/VERSION = "9.9.9"/' \
+mismatch_release="$mismatch_root/extracted/omen-acpi-toolkit-v2.5.0"
+sed -i 's/^VERSION = "2.5.0"$/VERSION = "9.9.9"/' \
     "$mismatch_release/scripts/04-stock-recovery.py"
 mismatch_hash="$(sha256sum "$mismatch_release/scripts/04-stock-recovery.py" | awk '{print $1}')"
 sed -i "s|^[0-9a-f]\{64\}  scripts/04-stock-recovery.py$|$mismatch_hash  scripts/04-stock-recovery.py|" \
     "$mismatch_release/SHA256SUMS"
 tar --owner=0 --group=0 --numeric-owner --sort=name --mtime='@1785542400' \
-    -czf "$mismatch_root/assets/omen-acpi-toolkit-v2.4.0.tar.gz" \
-    -C "$mismatch_root/extracted" omen-acpi-toolkit-v2.4.0
-( cd "$mismatch_root/assets" && sha256sum omen-acpi-toolkit-v2.4.0.tar.gz \
-    > omen-acpi-toolkit-v2.4.0.tar.gz.sha256 )
+    -czf "$mismatch_root/assets/omen-acpi-toolkit-v2.5.0.tar.gz" \
+    -C "$mismatch_root/extracted" omen-acpi-toolkit-v2.5.0
+( cd "$mismatch_root/assets" && sha256sum omen-acpi-toolkit-v2.5.0.tar.gz \
+    > omen-acpi-toolkit-v2.5.0.tar.gz.sha256 )
 if HOME="$work/mismatch-home" "$ROOT/update.sh" --verify-only --archive \
-    "$mismatch_root/assets/omen-acpi-toolkit-v2.4.0.tar.gz" \
+    "$mismatch_root/assets/omen-acpi-toolkit-v2.5.0.tar.gz" \
     >"$work/updater-mismatch.out" 2>"$work/updater-mismatch.err"; then
     fail "updater accepted a divergent Python manager version"
 fi

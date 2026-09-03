@@ -1,7 +1,7 @@
 # Usage guide
 
 This document is the extended operational reference for OMEN ACPI Toolkit
-v2.4.0. Installation, the minimum safe workflow, stock return,
+v2.5.0. Installation, the minimum safe workflow, stock return,
 recovery limits and removal remain directly in the release `README.md`.
 
 ## Command reference
@@ -74,7 +74,7 @@ The dashboard summarizes machine identity, dependencies, active DSDT, stock
 recovery and both managed variants. A typical clean initial state is:
 
 ```text
-+ OMEN ACPI Toolkit v2.4.0 -----------------------------------------------+
++ OMEN ACPI Toolkit v2.5.0 -----------------------------------------------+
 |                                                                          |
 |  Machine        8E35 / BIOS F.13       READY                             |
 |  Dependencies   All commands available READY                             |
@@ -155,6 +155,8 @@ Managed lifecycle states include:
 - `CONFLICT / BLOCKED`: state is partial, mixed or externally modified and is
   never changed automatically;
 - stale kernel/initramfs: run `omen-acpi refresh` before booting the owned entry.
+  On CachyOS/Arch the installed ALPM hook normally does this after kernel,
+  mkinitcpio, Limine, `nvidia-utils` and `*-dkms` package transactions.
 
 ## Entry lifecycle
 
@@ -164,7 +166,8 @@ variant-specific ACPI early CPIO. This avoids per-variant copies of the kernel,
 initramfs and NVIDIA modules while keeping standard and LTS entry identity
 separate.
 
-After a kernel, initramfs or Limine update—or after installing/removing LTS—run:
+After a kernel, initramfs or Limine update—or after installing/removing LTS—run
+`omen-acpi refresh` if the ALPM hook is absent or reported a warning:
 
 ```bash
 omen-acpi refresh all
@@ -263,7 +266,7 @@ operation logs. Neither command publishes anything.
 | `BLOCKED: an ACPI override is active in this boot` | Reboot into the normal entry before collection or installation. |
 | `CONFLICT / BLOCKED` | External or partial state was detected. Nothing is changed automatically; inspect it from a stock boot. |
 | `LEGACY / REINSTALL` | Return to stock, remove the entry and install a fresh one. |
-| Stale standard/LTS entry metadata | Run `omen-acpi refresh all` before selecting an owned entry. |
+| Stale standard/LTS entry metadata | Run `omen-acpi refresh all` before selecting an owned entry. The ALPM hook does this after kernel, Limine, `nvidia-utils` and `*-dkms` package updates when the hook is installed. |
 | Recovery is missing or refresh-required | Keep at least one supported stock entry, boot it cleanly and run `omen-acpi prepare-stock-recovery`. |
 | Normal entry and trusted snapshot are both missing | Do not reuse a variant initramfs; use external manual recovery media. |
 | Recovery manifest or payload hash fails | Nothing is changed. Restore a normal stock boot externally and prepare a fresh snapshot. |
