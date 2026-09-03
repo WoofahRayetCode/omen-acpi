@@ -9,12 +9,19 @@ The toolkit collects the laptop's own ACPI tables, builds a checked DSDT
 override and adds it to a **separate Limine entry**. The normal CachyOS entries
 remain available and unchanged.
 
-> **Development model.** This repository was built through a substantially
-> AI-assisted engineering workflow. OpenAI Codex produced significant portions
-> of the Bash/Python implementation, automated tests and documentation. Paolo
-> De Marinis supplied the hardware evidence, set objectives, safety constraints
-> and acceptance criteria, reviewed targeted changes, investigated regressions,
-> performed the real-hardware checks and made the release decisions.
+> **Development model.** This repository was created by **Paolo De Marinis**,
+> the original developer
+> ([paolo-de-marinis/omen-acpi](https://github.com/paolo-de-marinis/omen-acpi)).
+> It was built through a substantially AI-assisted engineering workflow. OpenAI
+> Codex produced significant portions of the Bash/Python implementation,
+> automated tests and documentation. Paolo supplied the hardware evidence, set
+> objectives, safety constraints and acceptance criteria, reviewed targeted
+> changes, investigated regressions, performed the real-hardware checks and
+> made the release decisions. The v2.5.0 quality-of-life updates —
+> human-readable Limine titles, selected-entry comments, stock-preservation
+> proofs after sync/removal, `doctor --fix` refresh of stale managed
+> entries, and the fail-soft ALPM PostTransaction refresh hook — were
+> AI-assisted with Grok.
 
 > **This is not a generic HP OMEN fix.** Only the model, board and BIOS listed
 > below have been physically validated. An incompatible ACPI override can
@@ -156,27 +163,47 @@ Combined also completed the checked boot without the related `WQBZ`, `WQBE` or
 `AE_AML_BUFFER_LIMIT` messages. The standard/LTS entry lifecycle and one
 Combined LTS boot were checked with v2.3.0; S5-only on LTS was not boot-tested.
 
-Version 2.5.0 changes Limine titles, selected-entry comments, stock-preservation
-checks and kernel-update refresh automation only. Its ACPI transformers and AML
+Version 2.5.0 is a quality-of-life release only: its ACPI transformers and AML
 round-trip verifiers are byte-identical to v2.4.0 and v2.3.0, so the v2.3.0
 hardware observations remain the applicable baseline; no broader hardware
-compatibility is claimed.
+compatibility is claimed. Helpful additions in 2.5.0 include:
+
+- human-readable Limine titles (`zz-OMEN ACPI S5`, `zz-OMEN ACPI Combined`,
+  and matching LTS / stock-recovery labels) with pre-2.5.0 machine-id titles
+  kept as aliases that `omen-acpi refresh` rewrites in place;
+- clearer selected-entry `comment:` subtitles describing the S5 or Combined
+  override and that the stock CachyOS entry is unchanged;
+- post-sync / post-removal proofs that Limine global options and supported
+  stock CachyOS entry bodies stay byte-identical to the pre-change config;
+- `omen-acpi doctor --fix` refresh of stale managed entries;
+- a fail-soft ALPM PostTransaction hook that reconciles owned entries after
+  kernel, initramfs, DKMS, NVIDIA-utils and Limine-related package updates
+  without aborting pacman or auto-repairing conflicts.
 
 The full distinction between real-hardware observations, automated fixtures and
 untested cases is in [`docs/validation.md`](docs/validation.md).
 
 ## Development process
 
-This project was developed through a substantially AI-assisted workflow using
+**Paolo De Marinis** is the original developer and copyright holder of OMEN ACPI
+Toolkit. The upstream project lives at
+[github.com/paolo-de-marinis/omen-acpi](https://github.com/paolo-de-marinis/omen-acpi).
+
+The project was developed through a substantially AI-assisted workflow using
 OpenAI Codex. Codex produced significant portions of the Bash and Python
 implementation, automated tests and documentation, and assisted with code review
 and ACPI-analysis workflows.
 
-Paolo De Marinis identified and reproduced the shutdown symptom, supplied the
-machine observations and ACPI/log evidence, set the objectives, safety
-constraints and acceptance criteria, reviewed targeted changes, investigated
-regressions, performed the documented real-hardware boot, shutdown and recovery
-checks, and made the release decisions.
+The v2.5.0 quality-of-life updates listed above — Limine title and comment
+clarity, stock-preservation checks, doctor refresh behaviour and the ALPM
+auto-refresh hook, plus the matching docs and tests — were AI-assisted with
+Grok (xAI).
+
+Paolo identified and reproduced the shutdown symptom, supplied the machine
+observations and ACPI/log evidence, set the objectives, safety constraints and
+acceptance criteria, reviewed targeted changes, investigated regressions,
+performed the documented real-hardware boot, shutdown and recovery checks, and
+made the release decisions.
 
 He reviewed and accepted the agent-produced work at the relevant decision and
 validation points; he does not claim an exhaustive independent line-by-line
@@ -493,7 +520,17 @@ without reviewing their contents. This repository contains no ACPI dump,
 compiled machine table, initramfs, Limine configuration, serial number, UUID or
 OEM key.
 
-## License and affiliation
+## Credits, license and affiliation
+
+**Original developer:** [Paolo De Marinis](https://github.com/paolo-de-marinis)
+— author of the OMEN ACPI Toolkit and of the upstream repository
+[paolo-de-marinis/omen-acpi](https://github.com/paolo-de-marinis/omen-acpi).
+Credit for the problem analysis, safety model, checked ACPI workflow, Limine
+integration, stock-recovery design and hardware validation belongs to him.
+
+**AI assistance:** OpenAI Codex contributed substantially to the original
+implementation, tests and documentation under Paolo's direction. The v2.5.0
+quality-of-life updates documented above were AI-assisted with Grok (xAI).
 
 Copyright (C) 2026 Paolo De Marinis
 
