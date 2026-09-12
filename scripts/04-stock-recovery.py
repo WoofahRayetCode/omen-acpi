@@ -523,7 +523,13 @@ def validate_normal_source(text: str, esp: Path, source: dict | None = None) -> 
         raise Failure("normal entry contains an OMEN ACPI marker")
     kernel, kernel_canonical = resolve_limine_path(kernel_value, esp)
     module_pairs = [resolve_limine_path(item, esp) for item in modules]
-    forbidden = ("omen-acpi-s5", "omen-acpi-combined", "DSDT.aml")
+    forbidden = (
+        "omen-acpi-s5",
+        "omen-acpi-combined",
+        "omen-acpi-s5-vfio",
+        "/omen-acpi/",
+        "DSDT.aml",
+    )
     for local, canonical in [(kernel, kernel_canonical), *module_pairs]:
         if any(token.lower() in canonical.lower() for token in forbidden):
             raise Failure(f"variant or ACPI-override payload rejected: {canonical}")
@@ -568,22 +574,74 @@ def require_normal_source_identities(esp: Path, initial: dict) -> None:
 
 
 def managed_initramfs_hashes() -> set[str]:
+    """Collect hashes of managed override payloads that must never be snapshotted.
+
+    Supports both the legacy single-initramfs layout (`initramfs.img` +
+    `initramfs.sha256`) and the current multi-kernel layout (`early.cpio` +
+    `early.sha256`, optionally mirrored in `kernel-entries.json`).
+    """
     hashes: set[str] = set()
-    for variant in ("s5", "combined"):
+    owner = os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0
+    for variant in ("s5", "combined", "s5-vfio"):
         state = rooted(f"/var/lib/omen-acpi-{variant}-test")
         if not state.exists() and not state.is_symlink():
             continue
         require_secure_directory(state)
-        checksum = state / "initramfs.sha256"
-        payload = state / "initramfs.img"
-        require_regular_file(checksum, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
-        require_regular_file(payload, owner=os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0)
-        value = checksum.read_text(encoding="ascii", errors="strict").strip()
-        if not re.fullmatch(r"[0-9a-f]{64}", value):
-            raise Failure(f"managed variant contains an invalid initramfs checksum: {checksum}")
-        if sha256_file(payload) != value:
-            raise Failure(f"managed variant initramfs checksum does not match its payload: {payload}")
-        hashes.add(value)
+
+        legacy_checksum = state / "initramfs.sha256"
+        legacy_payload = state / "initramfs.img"
+        early_checksum = state / "early.sha256"
+        early_payload = state / "early.cpio"
+        manifest = state / "kernel-entries.json"
+
+        has_legacy = path_present(legacy_checksum) or path_present(legacy_payload)
+        has_early = path_present(early_checksum) or path_present(early_payload) or path_present(manifest)
+
+        if has_legacy:
+            require_regular_file(legacy_checksum, owner=owner)
+            require_regular_file(legacy_payload, owner=owner)
+            value = legacy_checksum.read_text(encoding="ascii", errors="strict").strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise Failure(
+                    f"managed variant contains an invalid initramfs checksum: {legacy_checksum}"
+                )
+            if sha256_file(legacy_payload) != value:
+                raise Failure(
+                    f"managed variant initramfs checksum does not match its payload: {legacy_payload}"
+                )
+            hashes.add(value)
+
+        if has_early:
+            require_regular_file(early_checksum, owner=owner)
+            require_regular_file(early_payload, owner=owner)
+            value = early_checksum.read_text(encoding="ascii", errors="strict").strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise Failure(
+                    f"managed variant contains an invalid early.cpio checksum: {early_checksum}"
+                )
+            if sha256_file(early_payload) != value:
+                raise Failure(
+                    f"managed variant early.cpio checksum does not match its payload: {early_payload}"
+                )
+            hashes.add(value)
+            if path_present(manifest):
+                require_regular_file(manifest, owner=owner)
+                try:
+                    data = json.loads(manifest.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise Failure(
+                        f"managed variant kernel-entries.json is unreadable: {manifest}"
+                    ) from error
+                recorded = str(data.get("early_sha256", "")).strip()
+                if recorded and recorded != value:
+                    raise Failure(
+                        f"managed variant kernel-entries.json early_sha256 mismatches early.sha256: {manifest}"
+                    )
+
+        if not has_legacy and not has_early:
+            raise Failure(
+                f"managed variant state is present without a recognised override payload: {state}"
+            )
     return hashes
 
 

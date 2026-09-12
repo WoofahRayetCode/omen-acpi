@@ -94,15 +94,47 @@ physical hardware for safety:
 - failure injection during commit, rollback or cleanup;
 - hostile or incomplete snapshots.
 
+## Experimental follow-up: `s5-vfio` on a VFIO host (2026-09-05)
+
+This section records a later experiment on a second machine in the same DMI
+family. It is **not** part of the Paolo De Marinis reference-hardware claim
+above and does not promote `s5-vfio` to a supported stock variant.
+
+| Property | Observed value |
+| --- | --- |
+| Host | CachyOS on HP OMEN 16 (`OMEN Gaming Laptop 16-ap0xxx` / board `8E35` / BIOS `F.13`) |
+| Kernel | `7.2.3-1-cachyos` |
+| Discrete GPU | NVIDIA GeForce RTX 5060 Max-Q (`GB206M`, `10de:2d19`) + audio `10de:22eb` |
+| Host GPU ownership | permanently `vfio-pci` for Looking Glass; host `nvidia.ko` not loaded |
+| Variant | experimental `s5-vfio` / OEM revision `0x0107200C` |
+
+| Area | Method | Result | Limit |
+| --- | --- | --- | --- |
+| `s5-vfio` install from stock | Real hardware | **PASS** — managed multi-kernel Limine entries installed for `linux-cachyos` and `linux-cachyos-lts`; stock `s5` entries left intact; Limine default unchanged | One host; stock recovery prepare also refreshed |
+| `s5-vfio` boot | Real hardware | **PASS** — classified `S5 VFIO OVERRIDE ACTIVE`; live DSDT `0x0107200C`; active SHA-256 matched managed AML; cmdline carried `omen_acpi.variant=s5-vfio`; kernel logged the DSDT table upgrade | One standard-kernel boot |
+| Host VFIO binding while override active | Real hardware | **PASS** — `0000:01:00.0` and `0000:01:00.1` remained bound to `vfio-pci`; no host `nvidia.ko` | Confirms the NVDE-arming premise of the experiment |
+| `s5-vfio` shutdown feel | Real hardware | **PASS (practical)** — orderly shutdown from the `s5-vfio` boot (`16:34`→`16:39`); after power-off the chassis felt cool to the touch | Subjective thermal observation; no AML trace of `NVDE`/`PG00._OFF`; `GSTA()` still unproven; longer soak not yet recorded |
+
+Interpretation: under permanent VFIO, stock `s5` is expected to leave
+`PG00._OFF()` inert because nothing arms `NVDE`. The cool post-shutdown chassis
+after an `s5-vfio` boot is practical evidence that the experimental `NVDE=1`
+path is doing useful work on this host. Keep using `zz-OMEN ACPI S5 VFIO` for
+VFIO daily shutdowns; do not treat plain `zz-OMEN ACPI S5` as sufficient while
+the dGPU stays host-unbound.
+
 ## Not validated
 
 - Any different BIOS, board or physical hardware.
-- Any other SKU in the `16-ap0xxx` family.
+- Any other SKU in the `16-ap0xxx` family, except the experimental `s5-vfio`
+  observation above on a second `8E35` / `F.13` VFIO host.
 - Compatibility inferred only from the shared DMI product string.
 - Any real-hardware execution of the v2.2.0 unvalidated-machine opt-in. Its
   consent, fail-closed and artifact-binding paths are synthetic-only.
 - A real S5-only boot through the LTS entry, or a v2.3.0 managed boot through
   either standard-kernel entry.
+- Formal proof that `PG00._OFF()` completed every firmware guard under
+  `s5-vfio`, including `GSTA()`.
+- A long post-shutdown soak / battery-drain measurement for `s5-vfio`.
 
 Automated success cannot turn any of these items into a support or compatibility
 claim.

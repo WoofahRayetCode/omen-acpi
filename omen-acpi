@@ -14,6 +14,8 @@ readonly EXPECTED_BOARD="8E35"
 readonly EXPECTED_BIOS="F.13"
 readonly S5_ENTRY="zz-OMEN ACPI S5"
 readonly S5_LTS_ENTRY="zz-OMEN ACPI S5 LTS"
+readonly S5_VFIO_ENTRY="zz-OMEN ACPI S5 VFIO"
+readonly S5_VFIO_LTS_ENTRY="zz-OMEN ACPI S5 VFIO LTS"
 readonly COMBINED_ENTRY="zz-OMEN ACPI Combined"
 readonly COMBINED_LTS_ENTRY="zz-OMEN ACPI Combined LTS"
 readonly STOCK_RECOVERY_ENTRY="zz-OMEN ACPI stock recovery"
@@ -52,6 +54,7 @@ readonly USER_STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/omen-acpi-fix"
 readonly SOURCE_POINTER="$USER_STATE_ROOT/source.path"
 readonly S5_BUILD_POINTER="$USER_STATE_ROOT/build-s5.path"
 readonly COMBINED_BUILD_POINTER="$USER_STATE_ROOT/build-combined.path"
+readonly S5_VFIO_BUILD_POINTER="$USER_STATE_ROOT/build-s5-vfio.path"
 readonly STOCK_FINGERPRINT="$USER_STATE_ROOT/stock-dsdt.sha256"
 readonly LAST_LOG_POINTER="$USER_STATE_ROOT/last-log.path"
 readonly PENDING_FILE="$USER_STATE_ROOT/pending-action"
@@ -485,6 +488,7 @@ PROBE_SHA256="unavailable"
 PROBE_TAINT="unknown"
 PROBE_LOG_OVERRIDE="unknown"
 PROBE_S5_FORMAT="unknown"
+PROBE_S5_VFIO_FORMAT="unknown"
 PROBE_COMBINED_FORMAT="unknown"
 PROBE_ACTIVE_FORMAT="none"
 RECOVERY_ACTIVE=0
@@ -501,6 +505,7 @@ parse_probe_output() {
     PROBE_TAINT="unknown"
     PROBE_LOG_OVERRIDE="unknown"
     PROBE_S5_FORMAT="unknown"
+PROBE_S5_VFIO_FORMAT="unknown"
     PROBE_COMBINED_FORMAT="unknown"
     PROBE_ACTIVE_FORMAT="none"
 
@@ -514,13 +519,14 @@ parse_probe_output() {
             TAINT_ACPI) PROBE_TAINT="$value" ;;
             LOG_OVERRIDE) PROBE_LOG_OVERRIDE="$value" ;;
             S5_FORMAT) PROBE_S5_FORMAT="$value" ;;
+            S5_VFIO_FORMAT) PROBE_S5_VFIO_FORMAT="$value" ;;
             COMBINED_FORMAT) PROBE_COMBINED_FORMAT="$value" ;;
             ACTIVE_FORMAT) PROBE_ACTIVE_FORMAT="$value" ;;
         esac
     done <<<"$output"
 
     case "$PROBE_STATE" in
-        stock|s5|combined|unknown|unsupported|unavailable) ;;
+        stock|s5|combined|s5-vfio|unknown|unsupported|unavailable) ;;
         *)
             PROBE_STATE="unavailable"
             PROBE_CLEAN=0
@@ -529,6 +535,7 @@ parse_probe_output() {
     esac
 
     case "$PROBE_S5_FORMAT" in managed|legacy|conflict|absent) ;; *) PROBE_S5_FORMAT="unknown" ;; esac
+    case "$PROBE_S5_VFIO_FORMAT" in managed|legacy|conflict|absent) ;; *) PROBE_S5_VFIO_FORMAT="unknown" ;; esac
     case "$PROBE_COMBINED_FORMAT" in managed|legacy|conflict|absent) ;; *) PROBE_COMBINED_FORMAT="unknown" ;; esac
     case "$PROBE_ACTIVE_FORMAT" in managed|legacy|none) ;; *) PROBE_ACTIVE_FORMAT="none" ;; esac
 
@@ -588,6 +595,7 @@ probe_boot_if_cached() {
     PROBE_REASON="authentication-required"
     PROBE_REVISION="unavailable"
     PROBE_S5_FORMAT="unknown"
+PROBE_S5_VFIO_FORMAT="unknown"
     PROBE_COMBINED_FORMAT="unknown"
     PROBE_ACTIVE_FORMAT="none"
     return 1
@@ -612,6 +620,7 @@ boot_state_label() {
                 printf 'COMBINED OVERRIDE ACTIVE'
             fi
             ;;
+        s5-vfio) printf 'S5 VFIO OVERRIDE ACTIVE' ;;
         unknown) printf 'UNKNOWN OVERRIDE / BLOCKED' ;;
         unsupported) printf 'UNSUPPORTED MACHINE' ;;
         unavailable) printf 'UNVERIFIABLE / BLOCKED' ;;
@@ -622,7 +631,7 @@ boot_state_label() {
 boot_state_color() {
     case "$PROBE_STATE" in
         stock) printf '%s' "$GREEN" ;;
-        s5|combined) printf '%s' "$CYAN" ;;
+        s5|combined|s5-vfio) printf '%s' "$CYAN" ;;
         unknown|unsupported|unavailable) printf '%s' "$RED" ;;
         *) printf '%s' "$YELLOW" ;;
     esac
@@ -652,7 +661,7 @@ set_pending_action() {
     local action="$1" variant="${2:-}" temporary
 
     case "$action:$variant" in
-        setup:s5|setup:combined|setup:both|build:s5|build:combined|build:both|install:s5|install:combined|install:both|collect:)
+        setup:s5|setup:combined|setup:s5-vfio|setup:both|build:s5|build:combined|build:s5-vfio|build:both|install:s5|install:combined|install:s5-vfio|install:both|collect:)
             ;;
         *)
             die "Refusing to save an invalid pending workflow: $action ${variant:-}"
@@ -691,7 +700,7 @@ pending_action() {
     action="$(pending_field ACTION 2>/dev/null || true)"
     variant="$(pending_field VARIANT 2>/dev/null || true)"
     case "$action:$variant" in
-        setup:s5|setup:combined|setup:both|build:s5|build:combined|build:both|install:s5|install:combined|install:both|collect:)
+        setup:s5|setup:combined|setup:s5-vfio|setup:both|build:s5|build:combined|build:s5-vfio|build:both|install:s5|install:combined|install:s5-vfio|install:both|collect:)
             printf '%s\n' "$action"
             ;;
         *)
@@ -756,8 +765,10 @@ show_stock_reboot_prompt() {
     printf 'Restart the computer and select this normal Limine entry:\n'
     printf '  %b%s%b\n\n' "$GREEN$BOLD" "$stock_entry" "$RESET"
     printf 'Do not select:\n'
-    printf '  - %s\n  - %s\n  - %s\n  - %s\n' \
-        "$S5_ENTRY" "$S5_LTS_ENTRY" "$COMBINED_ENTRY" "$COMBINED_LTS_ENTRY"
+    printf '  - %s\n  - %s\n  - %s\n  - %s\n  - %s\n  - %s\n' \
+        "$S5_ENTRY" "$S5_LTS_ENTRY" \
+        "$S5_VFIO_ENTRY" "$S5_VFIO_LTS_ENTRY" \
+        "$COMBINED_ENTRY" "$COMBINED_LTS_ENTRY"
     if [[ -n "$resume_action" ]]; then
         printf '\nRun %bomen-acpi%b again after logging in and choose Resume; the exact workflow was saved.\n' "$BOLD" "$RESET"
     fi
@@ -845,7 +856,7 @@ recover_stock() {
         return 0
     fi
     case "$PROBE_STATE" in
-        s5|combined) ;;
+        s5|combined|s5-vfio) ;;
         *) die "The current boot state is ambiguous or unverifiable; automatic recovery is blocked." ;;
     esac
     ensure_dependencies stock-recovery
@@ -1016,6 +1027,7 @@ build_pointer_for() {
     case "$1" in
         s5) printf '%s\n' "$S5_BUILD_POINTER" ;;
         combined) printf '%s\n' "$COMBINED_BUILD_POINTER" ;;
+        s5-vfio) printf '%s\n' "$S5_VFIO_BUILD_POINTER" ;;
         *) return 1 ;;
     esac
 }
@@ -1091,8 +1103,8 @@ capture_source() {
 
 normalize_variant() {
     case "${1:-}" in
-        s5|combined|both|all) printf '%s\n' "$1" ;;
-        *) die "Variant must be s5, combined or both." ;;
+        s5|combined|s5-vfio|both|all) printf '%s\n' "$1" ;;
+        *) die "Variant must be s5, combined, s5-vfio or both." ;;
     esac
 }
 
@@ -1136,7 +1148,7 @@ build_variants() {
     local requested source_archive="${2:-}"
     requested="$(normalize_variant "$1")"
     case "$requested" in
-        s5|combined)
+        s5|combined|s5-vfio)
             build_one "$requested" "$source_archive"
             ;;
         both|all)
@@ -1158,6 +1170,7 @@ variant_installed() {
     case "$1" in
         s5) [[ -d /var/lib/omen-acpi-s5-test ]] ;;
         combined) [[ -d /var/lib/omen-acpi-combined-test ]] ;;
+        s5-vfio) [[ -d /var/lib/omen-acpi-s5-vfio-test ]] ;;
         *) return 1 ;;
     esac
 }
@@ -1166,6 +1179,7 @@ variant_probe_format() {
     case "$1" in
         s5) printf '%s\n' "$PROBE_S5_FORMAT" ;;
         combined) printf '%s\n' "$PROBE_COMBINED_FORMAT" ;;
+        s5-vfio) printf '%s\n' "$PROBE_S5_VFIO_FORMAT" ;;
         *) return 1 ;;
     esac
 }
@@ -1202,7 +1216,7 @@ refine_installation_formats_cached() {
     [[ -x "$SUDO_BIN" ]] || return 0
     "$SUDO_BIN" -n true 2>/dev/null || return 0
 
-    for variant in s5 combined; do
+    for variant in s5 combined s5-vfio; do
         rc=0
         if output="$("$SUDO_BIN" -n -- "$MANAGER" inspect "$variant" 2>/dev/null)"; then
             rc=0
@@ -1214,6 +1228,8 @@ refine_installation_formats_cached() {
             managed:0|legacy:0|absent:0|conflict:3)
                 if [[ "$variant" == "s5" ]]; then
                     PROBE_S5_FORMAT="$schema"
+                elif [[ "$variant" == "s5-vfio" ]]; then
+                    PROBE_S5_VFIO_FORMAT="$schema"
                 else
                     PROBE_COMBINED_FORMAT="$schema"
                 fi
@@ -1301,7 +1317,7 @@ refresh_variants() {
     requested="$(normalize_variant "${1:-all}")"
     ensure_dependencies status
     case "$requested" in
-        s5|combined)
+        s5|combined|s5-vfio)
             refresh_one "$requested"
             ;;
         both|all)
@@ -1318,7 +1334,7 @@ refresh_variants() {
 install_variants() {
     local requested build_archive="${2:-}" first_schema second_schema
     requested="$(normalize_variant "$1")"
-    if [[ -n "$build_archive" && "$requested" != "s5" && "$requested" != "combined" ]]; then
+    if [[ -n "$build_archive" && "$requested" != "s5" && "$requested" != "combined" && "$requested" != "s5-vfio" ]]; then
         die "An explicit build archive can only be used with one variant."
     fi
     if [[ -n "$build_archive" ]]; then
@@ -1326,7 +1342,7 @@ install_variants() {
         build_archive="$(realpath -- "$build_archive")"
     fi
     case "$requested" in
-        s5|combined)
+        s5|combined|s5-vfio)
             first_schema="$(inspect_variant_schema "$requested")"
             if [[ "$first_schema" == "managed" ]]; then
                 refresh_one "$requested"
@@ -1362,7 +1378,7 @@ install_variants() {
     ensure_dependencies install
 
     case "$requested" in
-        s5|combined)
+        s5|combined|s5-vfio)
             install_one "$requested" "$build_archive"
             ;;
         both|all)
@@ -1446,7 +1462,7 @@ status_variants() {
     printf 'Detection reason: %s\n' "$PROBE_REASON"
 
     case "$requested" in
-        s5|combined)
+        s5|combined|s5-vfio)
             status_one "$requested" || rc=$?
             ;;
         both|all)
@@ -1571,6 +1587,7 @@ doctor() {
     fi
 
     printf 'S5 entry format: %s\n' "$PROBE_S5_FORMAT"
+    printf 'S5 VFIO entry format: %s\n' "$PROBE_S5_VFIO_FORMAT"
     printf 'Combined entry format: %s\n' "$PROBE_COMBINED_FORMAT"
 
     secure_boot="$(secure_boot_state)"
@@ -1578,7 +1595,7 @@ doctor() {
 
     if [[ "$fix" == "--fix" ]]; then
         local variant schema
-        for variant in s5 combined; do
+        for variant in s5 combined s5-vfio; do
             variant_installed "$variant" || continue
             schema="$(inspect_variant_schema "$variant")"
             [[ "$schema" == "managed" ]] || continue
@@ -1623,6 +1640,7 @@ setup_variant_label() {
     case "$1" in
         s5) printf 'S5-only' ;;
         combined) printf 'Combined' ;;
+        s5-vfio) printf 'S5-VFIO' ;;
         both) printf 'Both' ;;
         *) return 1 ;;
     esac
@@ -1637,6 +1655,8 @@ offer_test_reboot() {
             "$GREEN$BOLD" "$S5_ENTRY" "$RESET" "$GREEN$BOLD" "$S5_LTS_ENTRY" "$RESET" ;;
         combined) printf '  %b%s%b (standard) or %b%s%b (LTS)\n' \
             "$GREEN$BOLD" "$COMBINED_ENTRY" "$RESET" "$GREEN$BOLD" "$COMBINED_LTS_ENTRY" "$RESET" ;;
+        s5-vfio) printf '  %b%s%b (standard) or %b%s%b (LTS)\n' \
+            "$GREEN$BOLD" "$S5_VFIO_ENTRY" "$RESET" "$GREEN$BOLD" "$S5_VFIO_LTS_ENTRY" "$RESET" ;;
         both|all)
             printf '  %b%s%b / %b%s%b\n' "$GREEN$BOLD" "$S5_ENTRY" "$RESET" "$GREEN$BOLD" "$S5_LTS_ENTRY" "$RESET"
             printf '  %b%s%b / %b%s%b\n' "$GREEN$BOLD" "$COMBINED_ENTRY" "$RESET" "$GREEN$BOLD" "$COMBINED_LTS_ENTRY" "$RESET"
@@ -1663,7 +1683,7 @@ guided_setup() {
         requested="$SETUP_VARIANT_RESULT"
     else
         case "$requested" in
-            s5|combined|both) ;;
+            s5|combined|s5-vfio|both) ;;
             *) die "Variant must be s5, combined or both." ;;
         esac
     fi
@@ -1702,7 +1722,7 @@ guided_setup() {
     fi
 
     case "$requested" in
-        s5|combined)
+        s5|combined|s5-vfio)
             variant="$requested"
             build_one "$variant" "$source_archive" || return
             install_one "$variant" "$LAST_BUILD_ARCHIVE" || return
@@ -1878,19 +1898,19 @@ recommended_action() {
         fi
     elif ((${#MISSING_PACKAGES[@]} > 0)); then
         printf 'Install the missing dependencies.'
-    elif [[ "$PROBE_S5_FORMAT" == "conflict" || "$PROBE_COMBINED_FORMAT" == "conflict" ]]; then
+    elif [[ "$PROBE_S5_FORMAT" == "conflict" || "$PROBE_COMBINED_FORMAT" == "conflict" || "$PROBE_S5_VFIO_FORMAT" == "conflict" ]]; then
         printf 'Run status; modified or ambiguous installation state is blocked.'
     elif [[ "$PROBE_S5_FORMAT" == "legacy" || "$PROBE_COMBINED_FORMAT" == "legacy" ]]; then
-        if [[ "$PROBE_STATE" == "s5" || "$PROBE_STATE" == "combined" ]]; then
+        if [[ "$PROBE_STATE" == "s5" || "$PROBE_STATE" == "combined" || "$PROBE_STATE" == "s5-vfio" ]]; then
             printf 'Reboot into the normal Limine entry, then remove and freshly reinstall the legacy entry.'
         else
             printf 'Remove each legacy entry, then create a fresh managed entry.'
         fi
-    elif [[ "$PROBE_STATE" == "s5" || "$PROBE_STATE" == "combined" ]]; then
+    elif [[ "$PROBE_STATE" == "s5" || "$PROBE_STATE" == "combined" || "$PROBE_STATE" == "s5-vfio" ]]; then
         printf 'Reboot into the normal Limine entry before changing an experimental entry.'
     elif [[ "$PROBE_STATE" == "stock" && "$STOCK_RECOVERY_STATUS_LABEL" != "VALID" ]]; then
         printf 'Prepare the preventive stock-recovery snapshot before installing a variant.'
-    elif [[ "$PROBE_S5_FORMAT" == "managed" || "$PROBE_COMBINED_FORMAT" == "managed" ]]; then
+    elif [[ "$PROBE_S5_FORMAT" == "managed" || "$PROBE_COMBINED_FORMAT" == "managed" || "$PROBE_S5_VFIO_FORMAT" == "managed" ]]; then
         printf 'Managed entries are installed; run status after kernel or initramfs updates.'
     elif [[ "$PROBE_STATE" == "unknown" || "$PROBE_STATE" == "unavailable" ]]; then
         printf 'Run diagnostics and reboot into the normal Limine entry.'
@@ -1933,16 +1953,18 @@ advanced_menu() {
         printf '  1. Collect a fresh stock ACPI source\n'
         printf '  2. Build S5-only without installing\n'
         printf '  3. Build Combined without installing\n'
-        printf '  4. Show private artifacts\n'
-        printf '  5. Show last operation log\n'
+        printf '  4. Build S5-VFIO without installing\n'
+        printf '  5. Show private artifacts\n'
+        printf '  6. Show last operation log\n'
         printf '  b. Back\n\n'
         read -r -p 'Selection: ' choice
         case "$choice" in
             1) ( capture_source ) || true; pause_for_user ;;
             2) ( build_variants s5 ) || true; pause_for_user ;;
             3) ( build_variants combined ) || true; pause_for_user ;;
-            4) ( show_artifacts ) || true; pause_for_user ;;
-            5) ( show_last_log ) || true; pause_for_user ;;
+            4) ( build_variants s5-vfio ) || true; pause_for_user ;;
+            5) ( show_artifacts ) || true; pause_for_user ;;
+            6) ( show_last_log ) || true; pause_for_user ;;
             b|B) return 0 ;;
             *) warn "Invalid selection." ;;
         esac
@@ -1951,8 +1973,8 @@ advanced_menu() {
 
 uninstall_toolkit() {
     [[ -x "$UNINSTALLER" ]] || die "Uninstaller not found."
-    if variant_installed s5 || variant_installed combined; then
-        die "Remove both managed Limine entries before uninstalling the toolkit."
+    if variant_installed s5 || variant_installed combined || variant_installed s5-vfio; then
+        die "Remove managed Limine entries before uninstalling the toolkit."
     fi
     warn "This removes the installed command and program files. Private artifacts are preserved."
     confirm_dangerous "Uninstall $APP_NAME?" no || return 0
@@ -2037,15 +2059,15 @@ $APP_NAME v$VERSION
 
 Usage:
   omen-acpi                         Open the interactive dashboard
-  omen-acpi setup [s5|combined|both]
+  omen-acpi setup [s5|combined|s5-vfio|both]
   omen-acpi doctor [--fix]
   omen-acpi dependencies [--install]
   omen-acpi collect
-  omen-acpi build <s5|combined|both> [SOURCE_ARCHIVE]
-  omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]
-  omen-acpi refresh [s5|combined|all]
-  omen-acpi status [s5|combined|all]
-  omen-acpi remove <s5|combined|all>
+  omen-acpi build <s5|combined|s5-vfio|both> [SOURCE_ARCHIVE]
+  omen-acpi install <s5|combined|s5-vfio|both> [BUILD_ARCHIVE]
+  omen-acpi refresh [s5|combined|s5-vfio|all]
+  omen-acpi status [s5|combined|s5-vfio|all]
+  omen-acpi remove <s5|combined|s5-vfio|all>
   omen-acpi artifacts
   omen-acpi logs
   omen-acpi resume
@@ -2109,10 +2131,10 @@ main() {
     case "$command" in
         '') interactive_main ;;
         setup)
-            (($# <= 1)) || die "Usage: omen-acpi setup [s5|combined|both]"
+            (($# <= 1)) || die "Usage: omen-acpi setup [s5|combined|s5-vfio|both]"
             case "${1:-}" in
-                ''|s5|combined|both) ;;
-                *) die "Usage: omen-acpi setup [s5|combined|both]" ;;
+                ''|s5|combined|s5-vfio|both) ;;
+                *) die "Usage: omen-acpi setup [s5|combined|s5-vfio|both]" ;;
             esac
             guided_setup "${1:-}"
             ;;
@@ -2135,31 +2157,31 @@ main() {
             ;;
         collect) (($# == 0)) || die "Usage: omen-acpi collect"; capture_source ;;
         build)
-            (($# == 1 || $# == 2)) || die "Usage: omen-acpi build <s5|combined|both> [SOURCE_ARCHIVE]"
-            case "$1" in s5|combined|both) ;; *) die "Usage: omen-acpi build <s5|combined|both> [SOURCE_ARCHIVE]" ;; esac
+            (($# == 1 || $# == 2)) || die "Usage: omen-acpi build <s5|combined|s5-vfio|both> [SOURCE_ARCHIVE]"
+            case "$1" in s5|combined|s5-vfio|both) ;; *) die "Usage: omen-acpi build <s5|combined|s5-vfio|both> [SOURCE_ARCHIVE]" ;; esac
             build_variants "$1" "${2:-}"
             ;;
         install)
-            (($# == 1 || $# == 2)) || die "Usage: omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]"
-            case "$1" in s5|combined|both) ;; *) die "Usage: omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]" ;; esac
+            (($# == 1 || $# == 2)) || die "Usage: omen-acpi install <s5|combined|s5-vfio|both> [BUILD_ARCHIVE]"
+            case "$1" in s5|combined|s5-vfio|both) ;; *) die "Usage: omen-acpi install <s5|combined|s5-vfio|both> [BUILD_ARCHIVE]" ;; esac
             install_variants "$1" "${2:-}"
             ;;
         refresh)
-            (($# <= 1)) || die "Usage: omen-acpi refresh [s5|combined|all]"
-            case "${1:-all}" in s5|combined|all) ;; *) die "Usage: omen-acpi refresh [s5|combined|all]" ;; esac
+            (($# <= 1)) || die "Usage: omen-acpi refresh [s5|combined|s5-vfio|all]"
+            case "${1:-all}" in s5|combined|s5-vfio|all) ;; *) die "Usage: omen-acpi refresh [s5|combined|s5-vfio|all]" ;; esac
             refresh_variants "${1:-all}"
             ;;
         migrate|restore-legacy)
             die "This command was removed."
             ;;
         status)
-            (($# <= 1)) || die "Usage: omen-acpi status [s5|combined|all]"
-            case "${1:-all}" in s5|combined|all) ;; *) die "Usage: omen-acpi status [s5|combined|all]" ;; esac
+            (($# <= 1)) || die "Usage: omen-acpi status [s5|combined|s5-vfio|all]"
+            case "${1:-all}" in s5|combined|s5-vfio|all) ;; *) die "Usage: omen-acpi status [s5|combined|s5-vfio|all]" ;; esac
             status_variants "${1:-all}"
             ;;
         remove)
-            (($# == 1)) || die "Usage: omen-acpi remove <s5|combined|all>"
-            case "$1" in s5|combined|all) ;; *) die "Usage: omen-acpi remove <s5|combined|all>" ;; esac
+            (($# == 1)) || die "Usage: omen-acpi remove <s5|combined|s5-vfio|all>"
+            case "$1" in s5|combined|s5-vfio|all) ;; *) die "Usage: omen-acpi remove <s5|combined|s5-vfio|all>" ;; esac
             remove_variants "$1"
             ;;
         artifacts) (($# == 0)) || die "Usage: omen-acpi artifacts"; show_artifacts ;;

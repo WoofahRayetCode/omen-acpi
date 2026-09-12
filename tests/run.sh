@@ -39,6 +39,7 @@ for required_target in \
     'Target = limine-entry-tool' \
     'Target = limine-snapper-sync' \
     'Target = nvidia-utils' \
+    'Target = systemd' \
     'Target = *-dkms' \
     'Target = *-dkms-git'; do
     grep -Fxq "$required_target" "$ROOT/packaging/90-omen-acpi-refresh.hook" \
@@ -204,7 +205,7 @@ PY
 
 printf 'CLI smoke checks...\n'
 cli_help="$(OMEN_ACPI_TESTING=1 HOME="$work/home" "$ROOT/omen-acpi" --plain --help)"
-grep -Fq 'omen-acpi setup [s5|combined|both]' <<<"$cli_help" \
+grep -Fq 'omen-acpi setup [s5|combined|s5-vfio|both]' <<<"$cli_help" \
     || fail "CLI help"
 for recovery_command in prepare-stock-recovery recover-stock reboot-stock remove-stock-recovery; do
     grep -Fq "omen-acpi $recovery_command" <<<"$cli_help" \
@@ -225,7 +226,7 @@ fi
     || fail "version-bound validation plan still exists"
 grep -Fq '## Development process' "$ROOT/README.md" \
     || fail "Codex development-process disclaimer is missing"
-grep -Fq 'omen-acpi refresh [s5|combined|all]' <<<"$cli_help" \
+grep -Fq 'omen-acpi refresh [s5|combined|s5-vfio|all]' <<<"$cli_help" \
     || fail "CLI help omits multi-kernel refresh"
 for removed_command in migrate restore-legacy; do
     if grep -Eq "^[[:space:]]*omen-acpi ${removed_command}([[:space:]]|$)" <<<"$cli_help"; then
@@ -370,7 +371,7 @@ if b"\x1b" not in styled or "OMEN ACPI Toolkit" not in styled_text:
 
 # A menu action that fails must return to the menu. Every action calls die(),
 # which exits the process, so each one has to be contained in a subshell.
-menu_text = run_tty("--plain", keys=b"5\n5\n\nb\nq\n").decode("utf-8", "replace")
+menu_text = run_tty("--plain", keys=b"5\n6\n\nb\nq\n").decode("utf-8", "replace")
 if "No operation log has been recorded yet." not in menu_text:
     raise SystemExit("advanced menu did not report the missing operation log")
 if menu_text.count("What would you like to do?") < 2:

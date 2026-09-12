@@ -134,7 +134,7 @@ def run_manager_roundtrip_verifier(
         directory = Path(temporary)
         source = directory / "DSDT.dsl"
         aml = directory / "DSDT.aml"
-        revision = 0x0107200A if variant == "s5" else 0x0107200B
+        revision = {"s5": 0x0107200A, "combined": 0x0107200B, "s5-vfio": 0x0107200C}[variant]
         source.write_text(source_text, encoding="utf-8")
 
         data = bytearray(36)
@@ -176,16 +176,23 @@ def verify_output(output: str, variant: str, revision: str) -> None:
     ompr = output.index("Store (0x03, \\_SB.PCI0.GPP0.PEGP.OMPR)")
     ps3 = output.index("\\_SB.PCI0.GPP0.PEGP._PS3 ()")
     assert ompr < ps3
-    assert "Store (One, NVDE)" not in output
     assert "If (CondRefOf (NVDE))" not in output
     assert output.count("If (LEqual (Arg0, 0x05))") == 1
-    if variant == "s5":
+    if variant == "s5-vfio":
+        nvde = output.index("Store (One, NVDE)")
+        assert nvde < ompr < ps3
         assert output.count(ORIGINAL_LOOP) == 2
         assert output.count(BOUNDED_LOOP) == 0
     else:
-        assert output.count(ORIGINAL_LOOP) == 0
-        assert output.count(BOUNDED_LOOP) == 2
-        assert output.count("Break") == 2
+        assert "Store (One, NVDE)" not in output
+        assert ompr < ps3
+        if variant == "s5":
+            assert output.count(ORIGINAL_LOOP) == 2
+            assert output.count(BOUNDED_LOOP) == 0
+        else:
+            assert output.count(ORIGINAL_LOOP) == 0
+            assert output.count(BOUNDED_LOOP) == 2
+            assert output.count("Break") == 2
 
 
 def main() -> None:
@@ -194,7 +201,7 @@ def main() -> None:
     )
     transformed_outputs: dict[str, str] = {}
     for engine, code in TRANSFORMS.items():
-        for variant, revision in (("s5", "0x0107200A"), ("combined", "0x0107200B")):
+        for variant, revision in (("s5", "0x0107200A"), ("combined", "0x0107200B"), ("s5-vfio", "0x0107200C")):
             result = run_transform(code, FIXTURE, variant, revision)
             if result.returncode != 0:
                 raise AssertionError(f"{engine}/{variant} failed: {result.stderr}")
@@ -266,7 +273,7 @@ def main() -> None:
                 f"critical operation/{variant}"
             )
 
-        if variant == "s5":
+        if variant in {"s5", "s5-vfio"}:
             missing_original_loop = output.replace(ORIGINAL_LOOP_BLOCK, "", 1)
         else:
             missing_original_loop = output.replace(

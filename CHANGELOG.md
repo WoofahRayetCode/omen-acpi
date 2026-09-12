@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Refreshes owned entries after `systemd` package transactions, because its
+  initramfs hook can rewrite Limine's stock kernel/initramfs records.
+- Adds experimental `s5-vfio` Limine variant (OEM revision `0x0107200C`) that
+  writes `NVDE=1` before the stock S5 `OMPR`/`_PS3` sequence so `PG00._OFF()` is
+  reachable when the host NVIDIA driver never runs under VFIO/Looking Glass.
+- Leaves stock `s5` / `combined` transformers and Looking Glass VM setup unchanged.
+- Teaches stock recovery to recognise current multi-kernel managed payloads
+  (`early.cpio` / `early.sha256`) as well as legacy `initramfs.img` state, and
+  includes `s5-vfio` in that ownership scan.
+- Labels an active `s5-vfio` boot as `S5 VFIO OVERRIDE ACTIVE` in doctor/status.
+- Records an experimental real-hardware `s5-vfio` boot/shutdown observation on a
+  VFIO/Looking Glass host in `docs/validation.md` (cool chassis after shutdown;
+  not part of the original reference-hardware claim).
+
 ## 2.5.0 - 2026-09-02
 
 - Renames experimental Limine titles to human-readable labels while keeping the

@@ -18,6 +18,7 @@ readonly EXPECTED_TABLE_ID="8E35    "
 readonly ORIGINAL_REVISION="0x01072009"
 readonly S5_REVISION="0x0107200A"
 readonly COMBINED_REVISION="0x0107200B"
+readonly S5_VFIO_REVISION="0x0107200C"
 readonly ACPI_OVERRIDE_TAINT=256
 
 mode="env"
@@ -444,13 +445,16 @@ PY
 
 managed_s5_state="$(root_path /var/lib/omen-acpi-s5-test)"
 managed_combined_state="$(root_path /var/lib/omen-acpi-combined-test)"
+managed_s5_vfio_state="$(root_path /var/lib/omen-acpi-s5-vfio-test)"
 managed_s5_sha="$(validated_managed_hash "$managed_s5_state" s5 "$S5_REVISION" 2>/dev/null || true)"
 managed_combined_sha="$(validated_managed_hash "$managed_combined_state" combined "$COMBINED_REVISION" 2>/dev/null || true)"
+managed_s5_vfio_sha="$(validated_managed_hash "$managed_s5_vfio_state" s5-vfio "$S5_VFIO_REVISION" 2>/dev/null || true)"
 legacy_s5_sha="$(validated_legacy_hash "$managed_s5_state" s5 "$S5_REVISION" 2>/dev/null || true)"
 legacy_combined_sha="$(validated_legacy_hash "$managed_combined_state" combined "$COMBINED_REVISION" 2>/dev/null || true)"
 
 s5_format="absent"
 combined_format="absent"
+s5_vfio_format="absent"
 if [[ -n "$managed_s5_sha" ]]; then
     s5_format="managed"
 elif [[ -n "$legacy_s5_sha" ]]; then
@@ -465,10 +469,16 @@ elif [[ -n "$legacy_combined_sha" ]]; then
 elif [[ -e "$managed_combined_state" || -L "$managed_combined_state" ]]; then
     combined_format="conflict"
 fi
+if [[ -n "$managed_s5_vfio_sha" ]]; then
+    s5_vfio_format="managed"
+elif [[ -e "$managed_s5_vfio_state" || -L "$managed_s5_vfio_state" ]]; then
+    s5_vfio_format="conflict"
+fi
 
 active_format="none"
 if [[ -n "$managed_s5_sha" && "$dsdt_sha256" == "$managed_s5_sha" ]] \
-    || [[ -n "$managed_combined_sha" && "$dsdt_sha256" == "$managed_combined_sha" ]]; then
+    || [[ -n "$managed_combined_sha" && "$dsdt_sha256" == "$managed_combined_sha" ]] \
+    || [[ -n "$managed_s5_vfio_sha" && "$dsdt_sha256" == "$managed_s5_vfio_sha" ]]; then
     active_format="managed"
 elif [[ -n "$legacy_s5_sha" && "$dsdt_sha256" == "$legacy_s5_sha" ]] \
     || [[ -n "$legacy_combined_sha" && "$dsdt_sha256" == "$legacy_combined_sha" ]]; then
@@ -489,6 +499,10 @@ if [[ -r "$cmdline_path" ]]; then
             omen_acpi.variant=combined)
                 ((boot_marker_count += 1))
                 boot_marker="combined"
+                ;;
+            omen_acpi.variant=s5-vfio)
+                ((boot_marker_count += 1))
+                boot_marker="s5-vfio"
                 ;;
             omen_acpi.variant=*)
                 ((boot_marker_count += 1))
@@ -513,7 +527,7 @@ elif [[ "$boot_marker" == "invalid" ]]; then
     reason="invalid-or-duplicate-boot-marker"
 elif [[ -n "$managed_s5_sha" && "$dsdt_sha256" == "$managed_s5_sha" \
     && "$dsdt_revision" == "$S5_REVISION" \
-    && "$boot_marker" != "combined" ]]; then
+    && "$boot_marker" != "combined" && "$boot_marker" != "s5-vfio" ]]; then
     if [[ "$taint_acpi" == "1" || "$log_other_acpi" == "1" ]]; then
         state="unknown"
         reason="additional-acpi-override"
@@ -523,13 +537,23 @@ elif [[ -n "$managed_s5_sha" && "$dsdt_sha256" == "$managed_s5_sha" \
     fi
 elif [[ -n "$managed_combined_sha" && "$dsdt_sha256" == "$managed_combined_sha" \
     && "$dsdt_revision" == "$COMBINED_REVISION" \
-    && "$boot_marker" != "s5" ]]; then
+    && "$boot_marker" != "s5" && "$boot_marker" != "s5-vfio" ]]; then
     if [[ "$taint_acpi" == "1" || "$log_other_acpi" == "1" ]]; then
         state="unknown"
         reason="additional-acpi-override"
     else
         state="combined"
         reason="managed-combined-hash"
+    fi
+elif [[ -n "$managed_s5_vfio_sha" && "$dsdt_sha256" == "$managed_s5_vfio_sha" \
+    && "$dsdt_revision" == "$S5_VFIO_REVISION" \
+    && "$boot_marker" != "s5" && "$boot_marker" != "combined" ]]; then
+    if [[ "$taint_acpi" == "1" || "$log_other_acpi" == "1" ]]; then
+        state="unknown"
+        reason="additional-acpi-override"
+    else
+        state="s5-vfio"
+        reason="managed-s5-vfio-hash"
     fi
 elif [[ -n "$legacy_s5_sha" && "$dsdt_sha256" == "$legacy_s5_sha" \
     && "$dsdt_revision" == "$S5_REVISION" \
@@ -588,6 +612,7 @@ emit_env() {
     printf 'LOG_CANDIDATE=%s\n' "$log_candidate"
     printf 'BOOT_MARKER=%s\n' "$boot_marker"
     printf 'S5_FORMAT=%s\n' "$s5_format"
+    printf 'S5_VFIO_FORMAT=%s\n' "$s5_vfio_format"
     printf 'COMBINED_FORMAT=%s\n' "$combined_format"
     printf 'ACTIVE_FORMAT=%s\n' "$active_format"
 }

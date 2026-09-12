@@ -22,6 +22,7 @@ Target = limine-mkinitcpio-hook
 Target = limine-entry-tool
 Target = limine-snapper-sync
 Target = nvidia-utils
+Target = systemd
 Target = *-dkms
 Target = *-dkms-git
 

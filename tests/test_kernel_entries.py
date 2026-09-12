@@ -122,7 +122,7 @@ class KernelEntriesTest(unittest.TestCase):
     def managed_titles(self) -> list[str]:
         names = set(entries.variant_names("s5").values()) | set(
             entries.variant_names("combined").values()
-        )
+        ) | set(entries.variant_names("s5-vfio").values())
         return [
             item["title"]
             for item in entries.parse_entries((self.esp / "limine.conf").read_text())
@@ -236,6 +236,29 @@ class KernelEntriesTest(unittest.TestCase):
             if item["title"] in entries.SUPPORTED
         ]
         self.assertEqual(stock_after, stock_before)
+
+    def test_vfio_variant_coexists_and_has_its_own_entries(self):
+        self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
+        self.sync("s5")
+        vfio_state = self.temp / "s5-vfio"
+        shutil.copytree(self.state, vfio_state)
+        (vfio_state / "kernel-entries.json").unlink()
+        entries.sync(self.esp, vfio_state, "s5-vfio")
+        self.assertEqual(
+            sorted(self.managed_titles()),
+            sorted([
+                "zz-OMEN ACPI S5",
+                "zz-OMEN ACPI S5 LTS",
+                "zz-OMEN ACPI S5 VFIO",
+                "zz-OMEN ACPI S5 VFIO LTS",
+            ]),
+        )
+        text = (self.esp / "limine.conf").read_text()
+        self.assertIn(
+            "Experimental VFIO/Looking Glass S5 override (NVDE=1). "
+            "Stock CachyOS entry unchanged.",
+            text,
+        )
 
     def test_historical_snapshot_entries_do_not_block_active_install(self):
         config = self.esp / "limine.conf"

@@ -293,6 +293,10 @@ CURRENT_TITLES = {
         "linux-cachyos": "zz-OMEN ACPI Combined",
         "linux-cachyos-lts": "zz-OMEN ACPI Combined LTS",
     },
+    "s5-vfio": {
+        "linux-cachyos": "zz-OMEN ACPI S5 VFIO",
+        "linux-cachyos-lts": "zz-OMEN ACPI S5 VFIO LTS",
+    },
 }
 LEGACY_TITLES = {
     "s5": {
@@ -302,6 +306,10 @@ LEGACY_TITLES = {
     "combined": {
         "linux-cachyos": "zz-omen-acpi-combined-test",
         "linux-cachyos-lts": "zz-omen-acpi-combined-test-lts",
+    },
+    "s5-vfio": {
+        "linux-cachyos": "zz-omen-acpi-s5-vfio-test",
+        "linux-cachyos-lts": "zz-omen-acpi-s5-vfio-test-lts",
     },
 }
 
@@ -327,6 +335,8 @@ def entry_comment(variant: str) -> str:
         return "Experimental S5 GPU power-off override. Stock CachyOS entry unchanged."
     if variant == "combined":
         return "Experimental S5 override plus WQBZ buffer bounds. Stock CachyOS entry unchanged."
+    if variant == "s5-vfio":
+        return "Experimental VFIO/Looking Glass S5 override (NVDE=1). Stock CachyOS entry unchanged."
     raise Failure(f"unsupported variant: {variant}")
 
 
@@ -355,7 +365,7 @@ def entry_record(variant: str, source: dict, early_path: str) -> dict:
 def render_entry(record: dict) -> list[str]:
     indent = " " * 4
     owner = re.fullmatch(
-        r"omen-acpi-owned=v1 variant=(s5|combined) kernel=(linux-cachyos(?:-lts)?)",
+        r"omen-acpi-owned=v1 variant=(s5|combined|s5-vfio) kernel=(linux-cachyos(?:-lts)?)",
         record["owner"],
     )
     if owner is None:
@@ -377,7 +387,7 @@ def normalized_owned(item: dict) -> dict:
     owners = [value for value in item["comments"] if value.startswith("omen-acpi-owned=")]
     if len(owners) != 1:
         raise Failure(f"reserved entry {item['title']!r} has no unique ownership marker")
-    match = re.fullmatch(r"omen-acpi-owned=v1 variant=(s5|combined) kernel=(linux-cachyos(?:-lts)?)", owners[0])
+    match = re.fullmatch(r"omen-acpi-owned=v1 variant=(s5|combined|s5-vfio) kernel=(linux-cachyos(?:-lts)?)", owners[0])
     if not match:
         raise Failure(f"reserved entry {item['title']!r} has an invalid ownership marker")
     return {
@@ -810,7 +820,7 @@ def main() -> int:
     parser.add_argument("action", choices=("list", "sync", "remove", "status"))
     parser.add_argument("--esp", required=True, type=Path)
     parser.add_argument("--state", type=Path)
-    parser.add_argument("--variant", choices=("s5", "combined"))
+    parser.add_argument("--variant", choices=("s5", "combined", "s5-vfio"))
     arguments = parser.parse_args()
     esp = arguments.esp.absolute()
     if arguments.action in ("sync", "remove") and (arguments.state is None or arguments.variant is None):

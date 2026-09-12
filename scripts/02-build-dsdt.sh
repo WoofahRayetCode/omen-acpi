@@ -43,6 +43,7 @@ usage() {
     printf 'VARIANT must be one of:\n'
     printf '  s5        Build only the tested S5 power-off patch (OEM revision 0x0107200A).\n'
     printf '  combined  Build the S5 patch plus the WQBZ bounds fix (OEM revision 0x0107200B).\n'
+    printf '  s5-vfio   Experimental S5 + NVDE=1 for VFIO/Looking Glass (OEM revision 0x0107200C).\n'
     printf '\n'
     printf 'SOURCE_ARCHIVE must be an archive created by 01-collect-acpi.sh.\n'
 }
@@ -257,7 +258,7 @@ path = Path(sys.argv[1])
 variant = sys.argv[2]
 text = path.read_text(encoding="utf-8", errors="strict")
 
-if variant not in {"s5", "combined"}:
+if variant not in {"s5", "combined", "s5-vfio"}:
     raise SystemExit(f"Unsupported verification variant: {variant!r}")
 
 def method_block_span(source_text: str, method_name: str) -> tuple[int, int]:
@@ -321,10 +322,19 @@ if guard_count != 1:
         f"Expected one S5 guard inside _PTS; found {guard_count}"
     )
 
-critical_markers = [
-    r"Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)",
-    r"\_SB.PCI0.GPP0.PEGP._PS3 ()",
-]
+if variant == "s5-vfio":
+    critical_markers = [
+        r"Store (One, NVDE)",
+        r"Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)",
+        r"\_SB.PCI0.GPP0.PEGP._PS3 ()",
+    ]
+else:
+    critical_markers = [
+        r"Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)",
+        r"\_SB.PCI0.GPP0.PEGP._PS3 ()",
+    ]
+    if "Store (One, NVDE)" in pts:
+        raise SystemExit("non-VFIO round trip unexpectedly writes NVDE")
 
 positions = [pts.index(s5_guard)]
 for marker in critical_markers:
@@ -340,7 +350,7 @@ for marker in critical_markers:
     positions.append(pts.index(marker))
 
 if positions != sorted(positions):
-    raise SystemExit("S5 round-trip operations are not in the required order")
+    raise SystemExit("S5 round-trip operations are not in the required NVDE/OMPR/_PS3 order")
 
 original_loop = r'''                    While (LNotEqual (DerefOf (Index (BF01, Local5)), Zero))
                     {
@@ -372,7 +382,7 @@ normalized_text = normalize_whitespace(text)
 original_count = normalized_text.count(normalize_whitespace(original_loop))
 bounded_count = normalized_text.count(normalize_whitespace(bounded_loop))
 
-if variant == "s5":
+if variant in {"s5", "s5-vfio"}:
     if original_count != 2 or bounded_count != 0:
         raise SystemExit(
             "S5 round trip must contain exactly two original WQBZ loops and "
@@ -413,9 +423,15 @@ case "$variant" in
         PATCH_SUFFIX="COMBINED"
         WQBZ_WORKAROUND="YES"
         ;;
+    s5-vfio)
+        PATCHED_OEM_REVISION="0x0107200C"
+        PATCH_ID="S5_VFIO_NVDE"
+        PATCH_SUFFIX="S5-VFIO"
+        WQBZ_WORKAROUND="NO"
+        ;;
     *)
         usage >&2
-        die "Unknown variant '$variant'; expected 's5' or 'combined'"
+        die "Unknown variant '$variant'; expected 's5', 'combined' or 's5-vfio'"
         ;;
 esac
 
@@ -502,13 +518,14 @@ destination_path = Path(sys.argv[2])
 variant = sys.argv[3]
 patched_revision = sys.argv[4]
 
-if variant not in {"s5", "combined"}:
+if variant not in {"s5", "combined", "s5-vfio"}:
     raise SystemExit(f"Unsupported build variant: {variant!r}")
-if patched_revision not in {"0x0107200A", "0x0107200B"}:
+if patched_revision not in {"0x0107200A", "0x0107200B", "0x0107200C"}:
     raise SystemExit(f"Unsupported patched OEM revision: {patched_revision!r}")
 if (variant, patched_revision) not in {
     ("s5", "0x0107200A"),
     ("combined", "0x0107200B"),
+    ("s5-vfio", "0x0107200C"),
 }:
     raise SystemExit("Build variant and OEM revision do not match")
 
@@ -557,7 +574,7 @@ pts_old = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
     }
 '''
 
-pts_new = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
+pts_new_s5 = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
     {
         If (Arg0)
         {
@@ -587,6 +604,42 @@ pts_new = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
         }
     }
 '''
+pts_new_vfio = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
+    {
+        If (Arg0)
+        {
+            PTS (Arg0)
+            \_SB.TPM.TPTS (Arg0)
+            MPTS (Arg0)
+            SPTS (Arg0)
+            \_SB.PCI0.GPTS (Arg0)
+            \_SB.PCI0.NPTS (Arg0)
+
+            /*
+             * HP OMEN 16-ap0xxx, board 8E35, BIOS F.13.
+             * Experimental VFIO/Looking Glass path: arm NVDE before the
+             * firmware's original discrete-GPU power-down sequence so
+             * PG00._OFF() is reachable without host nvidia.ko.
+             */
+            If (LEqual (Arg0, 0x05))
+            {
+                If (CondRefOf (\_SB.PCI0.GPP0.PEGP.OMPR))
+                {
+                    If (CondRefOf (\_SB.PCI0.GPP0.PEGP._PS3))
+                    {
+                        Store (One, NVDE)
+                        Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)
+                        \_SB.PCI0.GPP0.PEGP._PS3 ()
+                    }
+                }
+            }
+        }
+    }
+'''
+if variant == "s5-vfio":
+    pts_new = pts_new_vfio
+else:
+    pts_new = pts_new_s5
 
 count = text.count(pts_old)
 if count != 1:
@@ -686,7 +739,13 @@ if variant == "combined":
         raise SystemExit("The two WQBZ loop replacements did not apply exactly")
 else:
     if text.count(loop_old) != 2 or text.count(loop_new) != 0:
-        raise SystemExit("The S5-only variant changed the WQBZ loops unexpectedly")
+        raise SystemExit("The S5-only/s5-vfio variant changed the WQBZ loops unexpectedly")
+
+if variant == "s5-vfio":
+    if text.count("Store (One, NVDE)") != 1:
+        raise SystemExit("s5-vfio variant must write NVDE exactly once")
+elif "Store (One, NVDE)" in text:
+    raise SystemExit("non-VFIO variant unexpectedly writes NVDE")
 
 destination_path.write_text(text, encoding="utf-8")
 PY
@@ -758,6 +817,8 @@ install -m 0600 "$roundtrip_dsl" "$package_dir/DSDT-roundtrip.dsl"
     printf 'The S5 patch runs only in _PTS(5) and performs PEGP.OMPR=3 followed by PEGP._PS3(), matching the original machine-tested installers.\n'
     if [[ "$variant" == "combined" ]]; then
         printf 'This combined variant also bounds exactly two WQBZ loops to SizeOf(BF01) and stops each loop at the first zero byte.\n'
+    elif [[ "$variant" == "s5-vfio" ]]; then
+        printf 'This experimental s5-vfio variant writes NVDE=1 before OMPR/_PS3 and leaves WQBZ unchanged.\n'
     else
         printf 'This S5-only variant leaves both original WQBZ loops unchanged.\n'
     fi

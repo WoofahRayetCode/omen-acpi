@@ -90,6 +90,7 @@ Usage:
 VARIANT must be one of:
   s5        S5 power-off correction only
   combined  S5 power-off correction plus the two confirmed BF01 loop bounds
+  s5-vfio   Experimental S5 + NVDE=1 for VFIO/Looking Glass hosts
 
 Actions:
   install   Build and install a separate experimental Limine entry. An explicit
@@ -137,8 +138,21 @@ select_variant() {
             LEGACY_TEMP_PREFIX="omen-combined-test"
             LEGACY_COMPOSITE_NAME="initramfs-omen-acpi-combined-test.img"
             ;;
+        s5-vfio)
+            ENTRY_NAME="zz-omen-acpi-s5-vfio-test"
+            DROPIN="/etc/limine-entry-tool.d/92-omen-acpi-s5-vfio-test.conf"
+            STATE_DIR="/var/lib/omen-acpi-s5-vfio-test"
+            EXPECTED_PATCHED_REVISION="0x0107200C"
+            LEGACY_AML_NAME="DSDT-s5-vfio-test.aml"
+            LEGACY_DSL_NAME="DSDT-OMEN-F13-s5-vfio-test.dsl"
+            LEGACY_BUILD_AML_NAME="DSDT-OMEN-F13-s5-vfio-test.aml"
+            LEGACY_DROPIN_COMMENT="# Experimental VFIO/Looking Glass S5 NVDE arming test"
+            LEGACY_ENTRY_COMMENT="EXPERIMENTAL: HP OMEN F.13 DSDT S5+NVDE for VFIO; stock unchanged"
+            LEGACY_TEMP_PREFIX="omen-s5-vfio-test"
+            LEGACY_COMPOSITE_NAME="initramfs-omen-acpi-s5-vfio-test.img"
+            ;;
         *)
-            die "Unknown variant '$VARIANT'. Expected 's5' or 'combined'."
+            die "Unknown variant '$VARIANT'. Expected 's5', 'combined' or 's5-vfio'."
             ;;
     esac
 }
@@ -591,9 +605,9 @@ source = Path(sys.argv[1])
 destination = Path(sys.argv[2])
 variant = sys.argv[3]
 revision = sys.argv[4]
-if variant not in {"s5", "combined"}:
+if variant not in {"s5", "combined", "s5-vfio"}:
     raise SystemExit(f"unsupported variant: {variant!r}")
-if revision not in {"0x0107200A", "0x0107200B"}:
+if revision not in {"0x0107200A", "0x0107200B", "0x0107200C"}:
     raise SystemExit(f"unsupported patched revision: {revision!r}")
 text = source.read_text(encoding="utf-8", errors="strict")
 
@@ -635,7 +649,7 @@ pts_old = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
     }
 '''
 
-pts_new = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
+pts_new_s5 = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
     {
         If (Arg0)
         {
@@ -665,6 +679,42 @@ pts_new = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
         }
     }
 '''
+pts_new_vfio = r'''    Method (_PTS, 1, NotSerialized)  // _PTS: Prepare To Sleep
+    {
+        If (Arg0)
+        {
+            PTS (Arg0)
+            \_SB.TPM.TPTS (Arg0)
+            MPTS (Arg0)
+            SPTS (Arg0)
+            \_SB.PCI0.GPTS (Arg0)
+            \_SB.PCI0.NPTS (Arg0)
+
+            /*
+             * HP OMEN 16-ap0xxx, board 8E35, BIOS F.13.
+             * Experimental VFIO/Looking Glass path: arm NVDE before the
+             * firmware's original discrete-GPU power-down sequence so
+             * PG00._OFF() is reachable without host nvidia.ko.
+             */
+            If (LEqual (Arg0, 0x05))
+            {
+                If (CondRefOf (\_SB.PCI0.GPP0.PEGP.OMPR))
+                {
+                    If (CondRefOf (\_SB.PCI0.GPP0.PEGP._PS3))
+                    {
+                        Store (One, NVDE)
+                        Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)
+                        \_SB.PCI0.GPP0.PEGP._PS3 ()
+                    }
+                }
+            }
+        }
+    }
+'''
+if variant == "s5-vfio":
+    pts_new = pts_new_vfio
+else:
+    pts_new = pts_new_s5
 
 if text.count(pts_old) != 1:
     raise SystemExit(
@@ -767,14 +817,18 @@ if variant == "combined":
         raise SystemExit("the two BF01 loop transformations are incomplete")
 else:
     if text.count(loop_old) != 2 or text.count(loop_new) != 0:
-        raise SystemExit("the S5-only variant changed the WQBZ loops unexpectedly")
+        raise SystemExit("the S5-only/s5-vfio variant changed the WQBZ loops unexpectedly")
 
-required_once = (
+required_once = [
     "If (CondRefOf (\\_SB.PCI0.GPP0.PEGP.OMPR))",
     "If (CondRefOf (\\_SB.PCI0.GPP0.PEGP._PS3))",
     "Store (0x03, \\_SB.PCI0.GPP0.PEGP.OMPR)",
     "\\_SB.PCI0.GPP0.PEGP._PS3 ()",
-)
+]
+if variant == "s5-vfio":
+    required_once.insert(2, "Store (One, NVDE)")
+elif "Store (One, NVDE)" in text:
+    raise SystemExit("non-VFIO variant unexpectedly writes NVDE")
 for fragment in required_once:
     if text.count(fragment) != 1:
         raise SystemExit(f"patched fragment is absent or ambiguous: {fragment}")
@@ -851,7 +905,7 @@ if oem_table_id != "8E35    ":
 if oem_revision != expected_revision:
     raise SystemExit(f"unexpected OEM revision: 0x{oem_revision:08X}")
 
-if variant not in {"s5", "combined"}:
+if variant not in {"s5", "combined", "s5-vfio"}:
     raise SystemExit(f"unsupported verification variant: {variant!r}")
 
 def method_block_span(source_text: str, method_name: str) -> tuple[int, int]:
@@ -915,10 +969,19 @@ if pts_text.count(s5_guard) != 1:
         f"found {pts_text.count(s5_guard)}"
     )
 
-critical_markers = (
-    r"Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)",
-    r"\_SB.PCI0.GPP0.PEGP._PS3 ()",
-)
+if variant == "s5-vfio":
+    critical_markers = [
+        r"Store (One, NVDE)",
+        r"Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)",
+        r"\_SB.PCI0.GPP0.PEGP._PS3 ()",
+    ]
+else:
+    critical_markers = [
+        r"Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)",
+        r"\_SB.PCI0.GPP0.PEGP._PS3 ()",
+    ]
+    if "Store (One, NVDE)" in pts_text:
+        raise SystemExit("non-VFIO round trip unexpectedly writes NVDE")
 positions = [pts_text.index(s5_guard)]
 for marker in critical_markers:
     global_count = text.count(marker)
@@ -930,7 +993,7 @@ for marker in critical_markers:
         )
     positions.append(pts_text.index(marker))
 if positions != sorted(positions):
-    raise SystemExit("S5 operations are not ordered OMPR=3, _PS3")
+    raise SystemExit("S5 operations are not ordered NVDE/OMPR/_PS3 as required")
 
 for guard in (
     "If (CondRefOf (\\_SB.PCI0.GPP0.PEGP.OMPR))",
@@ -977,7 +1040,7 @@ global_bounded = normalized_text.count(normalized_bounded)
 wqbz_original = normalized_wqbz.count(normalized_original)
 wqbz_bounded = normalized_wqbz.count(normalized_bounded)
 
-if variant == "s5":
+if variant in {"s5", "s5-vfio"}:
     if (
         global_original != 2
         or wqbz_original != 2
@@ -2839,6 +2902,10 @@ pre_uninstall_check_action() {
         "zz-omen-acpi-s5-test-lts"
         "zz-omen-acpi-combined-test"
         "zz-omen-acpi-combined-test-lts"
+        "zz-omen-acpi-s5-vfio-test"
+        "zz-omen-acpi-s5-vfio-test-lts"
+        "zz-OMEN ACPI S5 VFIO"
+        "zz-OMEN ACPI S5 VFIO LTS"
         "zz-omen-acpi-stock-recovery"
         "zz-OMEN ACPI S5"
         "zz-OMEN ACPI S5 LTS"

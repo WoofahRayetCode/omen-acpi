@@ -44,10 +44,13 @@ test variants:
 | ---------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | `s5`       | extends `_PTS(5)` with `PEGP.OMPR = 3` followed by `PEGP._PS3()`       | first test for the incomplete S5 shutdown                             |
 | `combined` | contains the complete S5 change and separately bounds two `WQBZ` loops | test the shutdown change together with the observed buffer correction |
+| `s5-vfio` | experimentally sets `NVDE = 1`, then applies the S5 sequence | VFIO/Looking Glass hosts whose NVIDIA GPU stays bound to `vfio-pci` |
 
-Both variants use the firmware's existing methods. They do not call the GPU
-power resource directly, force `NVDE`, modify suspend or runtime power
-management, flash the BIOS or distribute a firmware table.
+All variants use the firmware's existing methods. They do not call the GPU
+power resource directly, modify suspend or runtime power management, flash the
+BIOS or distribute a firmware table. The stock `s5` and `combined` variants do
+not write `NVDE`; the separate experimental `s5-vfio` variant does, solely for
+the permanent-VFIO case described in [`patches/README.md`](patches/README.md).
 
 ## Why the S5 transformation reaches the GPU power resource
 
@@ -78,12 +81,13 @@ does not call `PG00._OFF()` directly: it preserves the firmware's `_PS3`
 sequence and its existing guards.
 
 One of those guards is `NVDE`. `PG00._OFF()` returns without performing the
-power-down body when `NVDE != 1`; it also checks the result of `GSTA()`. Neither
-implemented variant writes `NVDE`. On the documented reference environment,
-the NVIDIA driver was observed re-arming `NVDE` after an S3 resume, which is the
-measured premise under which the minimal sequence works. That observation does
-not establish the same state for another driver, BIOS or machine. The complete
-DSDT/SSDT reconstruction and measurement are in
+power-down body when `NVDE != 1`; it also checks the result of `GSTA()`. The
+stock variants do not write `NVDE`. On the documented reference environment,
+the NVIDIA driver was observed re-arming it after an S3 resume, which is the
+measured premise under which the minimal sequence works. The experimental
+`s5-vfio` entry writes it only because a host driver is deliberately absent.
+Neither observation establishes the same state for another driver, BIOS or
+machine. The complete DSDT/SSDT reconstruction and measurement are in
 [`docs/nvde-analysis.md`](docs/nvde-analysis.md).
 
 ## Why the WQBZ change is separate
@@ -177,7 +181,7 @@ compatibility is claimed. Helpful additions in 2.5.0 include:
   stock CachyOS entry bodies stay byte-identical to the pre-change config;
 - `omen-acpi doctor --fix` refresh of stale managed entries;
 - a fail-soft ALPM PostTransaction hook that reconciles owned entries after
-  kernel, initramfs, DKMS, NVIDIA-utils and Limine-related package updates
+  kernel, initramfs, systemd, DKMS, NVIDIA-utils and Limine-related package updates
   without aborting pacman or auto-repairing conflicts.
 
 The full distinction between real-hardware observations, automated fixtures and
@@ -422,7 +426,7 @@ omen-acpi refresh all
 On CachyOS/Arch, the installer also places an ALPM hook that runs this refresh
 after relevant package transactions: `linux-cachyos` / LTS (and their
 NVIDIA-open and headers packages), `mkinitcpio`, Limine-related packages,
-`nvidia-utils`, and any `*-dkms` / `*-dkms-git` module. That covers DKMS
+`nvidia-utils`, `systemd`, and any `*-dkms` / `*-dkms-git` module. That covers DKMS
 installs that rebuild initramfs without upgrading the kernel package itself.
 The hook never aborts pacman and never repairs modified or conflicting state;
 if it reports a warning, run the command above from a stock boot.

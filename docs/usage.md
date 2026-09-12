@@ -156,7 +156,7 @@ Managed lifecycle states include:
   never changed automatically;
 - stale kernel/initramfs: run `omen-acpi refresh` before booting the owned entry.
   On CachyOS/Arch the installed ALPM hook normally does this after kernel,
-  mkinitcpio, Limine, `nvidia-utils` and `*-dkms` package transactions.
+  mkinitcpio, Limine, `nvidia-utils`, `systemd` and `*-dkms` package transactions.
 
 ## Entry lifecycle
 
@@ -266,7 +266,7 @@ operation logs. Neither command publishes anything.
 | `BLOCKED: an ACPI override is active in this boot` | Reboot into the normal entry before collection or installation. |
 | `CONFLICT / BLOCKED` | External or partial state was detected. Nothing is changed automatically; inspect it from a stock boot. |
 | `LEGACY / REINSTALL` | Return to stock, remove the entry and install a fresh one. |
-| Stale standard/LTS entry metadata | Run `omen-acpi refresh all` before selecting an owned entry. The ALPM hook does this after kernel, Limine, `nvidia-utils` and `*-dkms` package updates when the hook is installed. |
+| Stale standard/LTS entry metadata | Run `omen-acpi refresh all` before selecting an owned entry. The ALPM hook does this after kernel, Limine, `nvidia-utils`, `systemd` and `*-dkms` package updates when the hook is installed. |
 | Recovery is missing or refresh-required | Keep at least one supported stock entry, boot it cleanly and run `omen-acpi prepare-stock-recovery`. |
 | Normal entry and trusted snapshot are both missing | Do not reuse a variant initramfs; use external manual recovery media. |
 | Recovery manifest or payload hash fails | Nothing is changed. Restore a normal stock boot externally and prepare a fresh snapshot. |

@@ -70,8 +70,9 @@ those systems.
 
 The NVDE notes are background research, not a guarantee. They separate what is
 provable from AML, what the maintainer observed on the reference machine, and
-what depends on proprietary driver behaviour. Neither implemented variant
-writes `NVDE`.
+what depends on proprietary driver behaviour. The stock `s5` and `combined`
+variants do not write `NVDE`; the experimental `s5-vfio` variant does so only
+for a GPU permanently bound to `vfio-pci`.
 
 The actual transformations derive from ACPI tables collected locally on HP
 OMEN MAX 16-ap0006sl, board `8E35`, BIOS `F.13`. Firmware tables and private

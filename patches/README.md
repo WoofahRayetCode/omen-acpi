@@ -1,17 +1,18 @@
 # Patch variants
 
-The two variants answer two different questions. The first asks whether the
+The stock variants answer two different questions. The first asks whether the
 reference firmware's existing discrete-GPU power-off path can be invoked during
 S5 shutdown. The second asks whether two out-of-bounds reads in `WQBZ` can be
 prevented while preserving the method's original zero-terminated copy.
 
-The S5 transformation is common to both variants. The WQBZ transformation is
+The S5 transformation is common to `s5` and `combined`. The WQBZ transformation is
 present only in Combined; it is not treated as part of the shutdown root cause.
+An experimental third variant, `s5-vfio`, exists for VFIO/Looking Glass hosts.
 
 The repository applies these rules to a DSDT extracted locally from the target
 machine. It does not distribute an HP firmware table or a compiled AML file.
 
-Both variants require the exact original structural anchors from the reference
+All variants require the exact original structural anchors from the reference
 firmware and fail closed if their expected occurrence counts differ.
 
 ## The firmware path used by the S5 change
@@ -35,7 +36,7 @@ The names have distinct roles:
 | `OMPR` | firmware variable tested by `PEGP._PS3()`; the relevant branch requires `0x03` |
 | `PEGP._PS3()` | firmware device-power method that contains the guarded call to the power resource |
 | `PG00._OFF()` | power-resource method whose body performs the GPU power-off sequence when its own guards pass |
-| `NVDE` | one guard read by `PG00._OFF()`; neither patch variant writes it |
+| `NVDE` | one guard read by `PG00._OFF()`; stock `s5`/`combined` do not write it; experimental `s5-vfio` does |
 
 ## `s5`: NVIDIA S5 power-off
 
@@ -136,4 +137,33 @@ the `WQBZ` method. The builder then checks that:
 
 These are structural and round-trip guarantees about the generated table. The
 real-hardware observations and their limits are recorded separately in
+[`../docs/validation.md`](../docs/validation.md).
+
+
+## `s5-vfio`: experimental VFIO / Looking Glass path
+
+OEM revision: `0x0107200C`
+
+This variant is for hosts that keep the discrete NVIDIA GPU permanently bound to
+`vfio-pci` (Looking Glass / GPU passthrough). In that configuration the host
+NVIDIA driver never runs, so it never arms `NVDE`, and the stock S5 sequence
+reaches `PG00._OFF()` only to return immediately.
+
+`s5-vfio` keeps the S5-only WQBZ behaviour and inserts one extra store before
+`OMPR` / `_PS3`:
+
+```asl
+Store (One, NVDE)
+Store (0x03, \_SB.PCI0.GPP0.PEGP.OMPR)
+\_SB.PCI0.GPP0.PEGP._PS3 ()
+```
+
+It does not call `PG00._OFF()` directly, does not change suspend/runtime PM, and
+does not claim to satisfy the second `_OFF` guard (`GSTA()`). Treat it as an
+experimental Limine entry only.
+
+On 2026-09-05 a VFIO/Looking Glass host in the same DMI family
+(`8E35` / BIOS `F.13`, RTX 5060 Max-Q permanently on `vfio-pci`) booted the
+managed `s5-vfio` entry (`0x0107200C`) and shut down cleanly; the chassis felt
+cool afterward. That is a practical observation only and is recorded in
 [`../docs/validation.md`](../docs/validation.md).
