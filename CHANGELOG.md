@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Adds a separate Nobara test harness that prepends a verified DSDT override to
+  a copy of the current kernel initramfs and creates an independently selected
+  GRUB Boot Loader Specification entry without changing the stock entry.
+- Adds an optional Windows PowerShell helper and documentation for configuring
+  the Windows RTC as UTC in Linux/Windows dual-boot systems. The helper is
+  separate from the Linux ACPI transformation, preserves Windows Time/NTP,
+  and records the prior registry state for rollback.
 - Refreshes owned entries after `systemd` package transactions, because its
   initramfs hook can rewrite Limine's stock kernel/initramfs records.
 - Adds experimental `s5-vfio` Limine variant (OEM revision `0x0107200C`) that

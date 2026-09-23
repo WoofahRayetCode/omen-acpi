@@ -499,6 +499,9 @@ firmware behavior or validate another machine.
 - [`docs/references.md`](docs/references.md): standards, reports and prior art.
 - [`docs/validation.md`](docs/validation.md): hardware observations and
   synthetic-test boundary.
+- [`docs/dual-boot-windows.md`](docs/dual-boot-windows.md): optional Windows
+  RTC configuration for dual-boot systems and the separate Nobara ACPI test
+  helper.
 
 Repository-only documentation is not included in the packaged release archive.
 This README retains the installation, stock-return, recovery-limit and removal

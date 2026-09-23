@@ -23,6 +23,22 @@ fail() {
 }
 
 printf 'syntax checks...\n'
+[[ -f "$ROOT/scripts/windows/dual-boot-time.ps1" ]] \
+    || fail "Windows dual-boot helper is missing"
+[[ -f "$ROOT/scripts/nobara/test-acpi-override.sh" ]] \
+    || fail "Nobara ACPI test helper is missing"
+[[ -f "$ROOT/scripts/nobara/test-nobara.sh" ]] \
+    || fail "Nobara validation helper is missing"
+grep -Fq 'CONFIG_ACPI_TABLE_UPGRADE=y' "$ROOT/scripts/nobara/test-acpi-override.sh" \
+    || fail "Nobara helper does not check ACPI table upgrade support"
+grep -Fq 'omen-acpi-nobara-test' "$ROOT/scripts/nobara/test-acpi-override.sh" \
+    || fail "Nobara helper does not use an owned test-entry marker"
+grep -Fq "RealTimeIsUniversal" "$ROOT/scripts/windows/dual-boot-time.ps1" \
+    || fail "Windows helper does not configure RealTimeIsUniversal"
+grep -Fq "PropertyType DWord -Value 1" "$ROOT/scripts/windows/dual-boot-time.ps1" \
+    || fail "Windows helper does not set a DWORD UTC value"
+grep -Fq "Windows Time service remains enabled" "$ROOT/scripts/windows/dual-boot-time.ps1" \
+    || fail "Windows helper does not preserve Windows Time"
 [[ -x "$ROOT/scripts/06-alpm-refresh.sh" ]] \
     || fail "ALPM refresh helper is not executable"
 grep -Fq 'Exec = /usr/local/lib/omen-acpi-fix/scripts/06-alpm-refresh.sh' \
