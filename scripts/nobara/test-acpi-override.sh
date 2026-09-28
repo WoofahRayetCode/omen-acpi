@@ -41,9 +41,31 @@ require_nobara() {
         || die "This helper is restricted to Nobara (detected ID=${ID:-unknown})."
 }
 
+ensure_iasl() {
+    command -v iasl >/dev/null 2>&1 && return 0
+
+    printf 'Required command is missing: iasl. Install acpica-tools now? [y/N] '
+    local answer
+    read -r answer
+    case "$answer" in
+        y|Y|yes|YES|Yes)
+            command -v dnf >/dev/null 2>&1 \
+                || die "dnf is required to install acpica-tools."
+            dnf install -y acpica-tools \
+                || die "Could not install acpica-tools."
+            command -v iasl >/dev/null 2>&1 \
+                || die "acpica-tools installed but iasl is still unavailable."
+            ;;
+        *)
+            die "Required command is missing: iasl. Install acpica-tools and retry."
+            ;;
+    esac
+}
+
 require_commands() {
     local command
-    for command in cpio iasl sha256sum tar; do
+    ensure_iasl
+    for command in cpio sha256sum tar; do
         command -v "$command" >/dev/null 2>&1 \
             || die "Required command is missing: $command"
     done
@@ -148,7 +170,7 @@ install_test_entry() {
     [[ ! -e "$entry" ]] || die "Managed test entry already exists: $entry"
     mkdir -p "$STATE_DIR/$variant/$kernel_version"
     extract_aml "$archive" "$aml"
-    iasl -d "$aml" -p "$work/check" >/dev/null 2>&1 \
+    iasl -p "$work/check" -d "$aml" >/dev/null 2>&1 \
         || die "iasl rejected the DSDT.aml from the build archive."
     make_early_cpio "$aml" "$early"
     cat "$early" "$STOCK_INITRAMFS" > "$work/initramfs.img"
