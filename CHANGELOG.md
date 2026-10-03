@@ -2,9 +2,6 @@
 
 ## Unreleased
 
-- Adds a separate Nobara test harness that prepends a verified DSDT override to
-  a copy of the current kernel initramfs and creates an independently selected
-  GRUB Boot Loader Specification entry without changing the stock entry.
 - Adds an optional Windows PowerShell helper and documentation for configuring
   the Windows RTC as UTC in Linux/Windows dual-boot systems. The helper is
   separate from the Linux ACPI transformation, preserves Windows Time/NTP,

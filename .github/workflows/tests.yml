@@ -17,3 +17,12 @@ jobs:
 
       - name: Run synthetic regression tests
         run: ./tests/run.sh
+
+      - name: Verify SHA256SUMS manifest
+        run: sha256sum --check --strict SHA256SUMS
+
+      - name: Shellcheck
+        run: git ls-files -z '*.sh' omen-acpi | xargs -0 shellcheck --severity=error
+
+      - name: Lint Markdown
+        run: npx --yes markdownlint-cli2 "**/*.md" "#node_modules"
