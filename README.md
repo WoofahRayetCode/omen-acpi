@@ -449,13 +449,12 @@ After a kernel, initramfs or Limine update, reconcile the owned entries:
 omen-acpi refresh all
 ```
 
-On CachyOS/Arch, the installer also places an ALPM hook that runs this refresh
-after relevant package transactions: `linux-cachyos` / LTS (and their
-NVIDIA-open and headers packages), `mkinitcpio`, Limine-related packages,
-`nvidia-utils`, `systemd`, and any `*-dkms` / `*-dkms-git` module. That covers DKMS
-installs that rebuild initramfs without upgrading the kernel package itself.
-The hook never aborts pacman and never repairs modified or conflicting state;
-if it reports a warning, run the command above from a stock boot.
+The Limine post hook runs this refresh after entry regeneration. The final ALPM
+hook also covers `linux-cachyos` / LTS (and their NVIDIA-open and headers
+packages), `mkinitcpio`, Limine-related packages, `nvidia-utils`, `systemd`,
+`*-dkms` / `*-dkms-git`, CPU microcode and `linux-firmware*`. This includes DKMS
+rebuilds that leave the kernel package unchanged. Hooks report conflicts without
+aborting the update; inspect `omen-acpi doctor` when a warning appears.
 
 Refresh adds a newly installed standard/LTS entry, updates changed references
 and removes only obsolete owned entries. Modified or mixed state is reported as

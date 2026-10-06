@@ -10,15 +10,15 @@ Run `omen-acpi` without arguments to open the interactive dashboard. The same
 operations are available as explicit subcommands:
 
 ```text
-omen-acpi setup [s5|combined|both]
+omen-acpi setup [s5|combined|s5-vfio|both]
 omen-acpi doctor [--fix]
 omen-acpi dependencies [--install]
 omen-acpi collect
-omen-acpi build <s5|combined|both> [SOURCE_ARCHIVE]
-omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]
-omen-acpi refresh [s5|combined|all]
-omen-acpi status [s5|combined|all]
-omen-acpi remove <s5|combined|all>
+omen-acpi build <s5|combined|s5-vfio|both> [SOURCE_ARCHIVE]
+omen-acpi install <s5|combined|s5-vfio|both> [BUILD_ARCHIVE]
+omen-acpi refresh [s5|combined|s5-vfio|all]
+omen-acpi status [s5|combined|s5-vfio|all]
+omen-acpi remove <s5|combined|s5-vfio|all>
 omen-acpi artifacts
 omen-acpi logs
 omen-acpi resume
@@ -176,10 +176,9 @@ omen-acpi refresh all
 
 Use `s5`, `combined` or `s5-vfio` instead of `all` when appropriate. `all`
 maintains every installed variant; setup/build/install `both` still selects only
-S5 and Combined. Refresh verifies the
-old ownership record, current stock paths and BLAKE2 hashes, initramfs contents
-and the new result before committing. Repeating it makes no duplicate entries and does not rewrite current boot
-assets. Missing entries with trusted state are classified as stale and safely
+S5 and Combined. Refresh verifies the old ownership record, current stock paths
+and BLAKE2 hashes, initramfs contents and the new result before committing.
+Repeating it makes no duplicate entries and does not rewrite current boot assets. Missing entries with trusted state are classified as stale and safely
 recreated; changed ownership markers, renamed entries and duplicates are blocked.
 Recognized v2.2.0 single-kernel managed state is migrated in place using its
 already verified AML; pre-managed legacy state retains its normal removal path.
