@@ -683,7 +683,11 @@ def sync(esp: Path, state: Path, variant: str) -> None:
         kernel_id: entry_record(variant, source, early_path)
         for kernel_id, source in primary.items()
     }
-    updated = rebuild_config(original, owned, records)
+    # Keep current blocks in place. Rebuilding one variant would otherwise move
+    # it ahead of its siblings, making every automatic multi-variant run write.
+    expected_owned = {key: dict(record, source_title="") for key, record in records.items()}
+    actual_owned = {record["kernel_id"]: record for record in map(normalized_owned, owned)}
+    updated = original if actual_owned == expected_owned else rebuild_config(original, owned, records)
     assert_stock_preserved(original, updated)
     data = {
         "schema": SCHEMA,
