@@ -216,6 +216,50 @@ class KernelEntriesTest(unittest.TestCase):
         self.sync()
         self.assertEqual(self.managed_titles(), ["zz-OMEN ACPI S5"])
 
+    def test_kernel_initramfs_firmware_and_microcode_updates_refresh_every_variant(self):
+        self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
+        states = {"s5": self.state}
+        for variant in ("combined", "s5-vfio"):
+            states[variant] = self.temp / variant
+            shutil.copytree(self.state, states[variant])
+        for variant, state in states.items():
+            entries.sync(self.esp, state, variant)
+        early_files = [self.esp / "omen-acpi" / variant / "early.cpio" for variant in states]
+        early_identity = [(p.stat().st_ino, p.stat().st_mtime_ns, p.read_bytes()) for p in early_files]
+        config = self.esp / "limine.conf"
+        scenarios = (
+            ("linux-cachyos/vmlinuz", b"updated-kernel"),
+            ("linux-cachyos/initramfs", b"nvidia-package-rebuild"),
+            ("linux-cachyos/initramfs", b"dkms-rebuild"),
+            ("linux-cachyos-lts/initramfs", b"firmware-rebuild"),
+            ("cpu-ucode.img", b"updated-microcode"),
+        )
+        for name, payload in scenarios:
+            with self.subTest(asset=name, rebuild=payload):
+                path = self.esp / "machine" / name
+                old_path = f"boot():/machine/{name}#{entries.blake2(path)}"
+                path.write_bytes(payload)
+                new_path = f"boot():/machine/{name}#{entries.blake2(path)}"
+                text = config.read_text()
+                lines = text.splitlines(keepends=True)
+                primary, fallback = entries.supported_entries(text)
+                for item in [*primary.values(), *fallback.values()]:
+                    for index in range(item["start"], item["end"]):
+                        lines[index] = lines[index].replace(old_path, new_path)
+                stock_updated = "".join(lines)
+                config.write_text(stock_updated)
+                for variant, state in states.items():
+                    self.assertEqual(entries.status(self.esp, state, variant), 3)
+                    entries.sync(self.esp, state, variant)
+                    self.assertEqual(entries.status(self.esp, state, variant), 0)
+                    records = entries.load_manifest(state, variant)["entries"].values()
+                    self.assertTrue(any(new_path in [r["kernel_path"], *r["module_paths"]] for r in records))
+                entries.assert_stock_preserved(stock_updated, config.read_text())
+                with mock.patch.object(entries, "write_atomic", side_effect=AssertionError("repeated maintenance wrote boot assets")):
+                    for variant, state in states.items():
+                        entries.sync(self.esp, state, variant)
+        self.assertEqual(early_identity, [(p.stat().st_ino, p.stat().st_mtime_ns, p.read_bytes()) for p in early_files])
+
     def test_combined_coexists_and_remove_preserves_every_stock_entry(self):
         self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
         self.sync("s5")
@@ -575,7 +619,10 @@ class EntryRulesTest(unittest.TestCase):
     def test_modified_or_renamed_survivors_block_reconstruction(self):
         for changed in (self.block.replace("zz-OMEN ACPI S5", "Renamed override"),
                         self.block.replace("root=UUID=test", "root=UUID=other"),
-                        self.block.replace("omen-acpi-owned=v1", "omen-acpi-owned=modified")):
+                        self.block.replace("omen-acpi-owned=v1", "omen-acpi-owned=modified"),
+                        self.block + "    kaslr: no\n",
+                        self.block.replace("Experimental S5 GPU power-off override.", "Edited comment."),
+                        self.block.replace("omen_acpi.variant=s5\n", "omen_acpi.variant=s5 initrd=foreign\n")):
             with self.subTest(changed=changed):
                 with self.assertRaises(entries.Failure):
                     entries.verify_owned_entries(self.stock + changed, self.manifest, "s5", (2, 0), allow_missing=True)

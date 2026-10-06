@@ -113,10 +113,16 @@ class MaintenanceTest(unittest.TestCase):
             state.mkdir(mode=0o700)
             (state / "kernel-entries.json").write_text("{}\n")
 
-    def auto(self, extra=None, pass_fds=()):
+    def auto(self, extra=None, pass_fds=(), post=False):
         environment = dict(os.environ, OMEN_ACPI_MANAGER=str(self.manager))
         environment.update(extra or {})
-        return subprocess.run(["bash", str(ROOT / "scripts/06-alpm-refresh.sh")], env=environment,
+        script = ROOT / "scripts/06-alpm-refresh.sh"
+        if post:
+            environment["OMEN_ACPI_TEST_HELPER"] = str(script)
+            script = self.root / "post-hook"
+            script.write_text((ROOT / "packaging/85-omen-acpi-refresh").read_text().replace(
+                "/usr/local/lib/omen-acpi-fix/scripts/06-alpm-refresh.sh", '"$OMEN_ACPI_TEST_HELPER"'))
+        return subprocess.run(["bash", str(script)], env=environment,
                               pass_fds=pass_fds, text=True, capture_output=True, timeout=15)
 
     def test_install_remove_and_rollback(self):
@@ -213,18 +219,56 @@ class MaintenanceTest(unittest.TestCase):
             fcntl.flock(stream, fcntl.LOCK_EX)
             os.dup2(stream.fileno(), 200)
             try:
-                result = self.auto({"OMEN_ACPI_BOOT_LOCK_FD200_HELD": "1"}, pass_fds=(200,))
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertTrue((self.root / "calls").exists(), result.stderr)
+                for caller in ("limine-update", "limine-mkinitcpio-install", "limine-entry-tool"):
+                    result = self.auto({"HOOK_CALLER": caller}, pass_fds=(200,), post=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue((self.root / "calls").exists(), result.stderr)
+                    for variant in maintenance.VARIANTS:
+                        data = json.loads(maintenance.health_path(variant).read_text())
+                        self.assertEqual(data["exit_code"], 0, result.stderr)
+                        self.assertEqual(data["caller"], caller)
                 with lock.open("a") as contender:
                     with self.assertRaises(BlockingIOError):
                         fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
             finally:
                 os.close(200)
 
+    def test_inherited_boot_descriptor_must_match_and_already_hold_the_lock(self):
+        self.variants()
+        lock = self.root / "run/lock/boot-partition.lock"
+        lock.parent.mkdir(mode=0o700)
+        lock.touch()
+        wrong = self.root / "run/lock/foreign.lock"
+        for borrowed in (lock, wrong):
+            with self.subTest(descriptor=borrowed.name), borrowed.open("a") as stream:
+                os.dup2(stream.fileno(), 200)
+                try:
+                    result = self.auto({"OMEN_ACPI_BOOT_LOCK_FD200_HELD": "1"}, pass_fds=(200,))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse((self.root / "calls").exists(), result.stderr)
+                    for variant in maintenance.VARIANTS:
+                        self.assertEqual(json.loads(maintenance.health_path(variant).read_text())["exit_code"], 1)
+                finally:
+                    os.close(200)
+
+    def test_toolkit_lock_contention_does_not_leak_the_boot_lock(self):
+        import fcntl
+        self.variants()
+        toolkit = self.root / "run/omen-acpi-fix/manager.lock"
+        toolkit.parent.mkdir(mode=0o700)
+        with toolkit.open("a") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            result = self.auto()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "calls").exists())
+        for variant in maintenance.VARIANTS:
+            self.assertEqual(json.loads(maintenance.health_path(variant).read_text())["exit_code"], 75)
+        with (self.root / "run/lock/boot-partition.lock").open("a") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_recursive_toolkit_operation_is_skipped(self):
         self.variants()
-        result = self.auto({"OMEN_ACPI_INTERNAL_OPERATION": "1"})
+        result = self.auto({"OMEN_ACPI_INTERNAL_OPERATION": "1"}, post=True)
         self.assertEqual(result.returncode, 0)
         self.assertFalse((self.root / "calls").exists())
         self.assertTrue(all(not maintenance.health_path(v).exists() for v in maintenance.VARIANTS))

@@ -540,6 +540,18 @@ def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespa
         comparable["source_title"] = ""
         if actual.get(kernel_id) != comparable:
             raise Failure(f"managed {variant} entry for {kernel_id} was modified")
+        item = next(item for item in candidates if normalized_owned(item)["kernel_id"] == kernel_id)
+        body = text.splitlines()[item["start"]:item["end"]]
+        while body and not body[-1].strip():
+            body.pop()
+        canonical = render_entry(record)
+        allowed = [canonical]
+        if record["title"] == legacy_variant_names(variant)[kernel_id]:
+            historical = list(canonical)
+            historical[1] = f"    comment: EXPERIMENTAL OMEN ACPI {kernel_id}; stock entry unchanged"
+            allowed.append(historical)
+        if body not in allowed:
+            raise Failure(f"managed {variant} entry body for {kernel_id} was modified")
     return candidates
 
 

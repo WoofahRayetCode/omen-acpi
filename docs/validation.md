@@ -161,10 +161,15 @@ body preservation, no-op refresh, transaction rollback, all three variants,
 inherited boot locks, contention, recursion, durable diagnostics and BIOS-change
 rejection. These are not new real-hardware compatibility claims.
 
-Before release, run `./tests/run.sh`, ShellCheck, Markdown lint and strict release
-checksums on Linux. On the CachyOS target, exercise a package update, a manual
+The Linux and Windows CI jobs passed on 6 October 2026 in
+[the first persistence run](https://github.com/WoofahRayetCode/omen-acpi/actions/runs/37463285291).
+Linux covered the complete `./tests/run.sh` suite, ShellCheck, Markdown lint,
+strict release checksums, reproducible archives and updater verification.
+Repeat these checks for the final release commit.
+
+On the CachyOS target, exercise a package update, a manual
 `limine-mkinitcpio` rebuild, snapshot sync and LTS installation/removal; verify
 `omen-acpi doctor` and `omen-acpi status all`, then boot the patched entry,
 verify the loaded DSDT and physically check shutdown. An unchanged stock entry
-must remain bootable. This Windows development host cannot perform those Linux
-filesystem/locking or hardware acceptance checks.
+must remain bootable. Physical boot, loaded-DSDT and shutdown acceptance for
+these maintenance changes remains pending on the CachyOS target.

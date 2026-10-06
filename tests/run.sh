@@ -1189,7 +1189,10 @@ for entry_name in \
     zz-omen-acpi-s5-test-lts \
     zz-omen-acpi-combined-test-lts \
     "zz-OMEN ACPI S5 LTS" \
-    "zz-OMEN ACPI Combined LTS"; do
+    "zz-OMEN ACPI Combined LTS" \
+    "zz-OMEN ACPI S5 VFIO" \
+    "zz-OMEN ACPI S5 VFIO LTS" \
+    zz-omen-acpi-s5-vfio-test-lts; do
     printf 'timeout: 5\n/CachyOS\n//%s\n' "$entry_name" \
         > "$pre_uninstall_fixture/esp/limine.conf"
     if TEST_ESP="$pre_uninstall_fixture/esp" \
