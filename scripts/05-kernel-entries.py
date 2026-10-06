@@ -412,7 +412,8 @@ def load_manifest(state: Path, variant: str) -> dict | None:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise Failure(f"invalid managed kernel-entry state: {error}") from error
     if (
-        set(data) != {"schema", "variant", "early_path", "early_sha256", "entries"}
+        not isinstance(data, dict)
+        or set(data) != {"schema", "variant", "early_path", "early_sha256", "entries"}
         or data["schema"] != SCHEMA
         or data["variant"] != variant
         or not isinstance(data["entries"], dict)
@@ -421,6 +422,24 @@ def load_manifest(state: Path, variant: str) -> dict | None:
         or not re.fullmatch(r"[0-9a-f]{64}", data["early_sha256"])
     ):
         raise Failure("managed kernel-entry state has an invalid schema")
+    if not re.fullmatch(rf"boot\(\):/omen-acpi/{re.escape(variant)}/early\.cpio#[0-9a-f]{{128}}", data["early_path"]):
+        raise Failure("managed early initramfs has an invalid path")
+    fields = {"title", "source_title", "kernel_id", "level", "kernel_path", "module_paths", "cmdline", "owner"}
+    for kernel_id, record in data["entries"].items():
+        if (not isinstance(record, dict) or set(record) != fields
+                or record["kernel_id"] != kernel_id
+                or record["title"] not in (variant_names(variant)[kernel_id], legacy_variant_names(variant)[kernel_id])
+                or record["owner"] != owner_marker(variant, kernel_id)
+                or type(record["level"]) is not int or record["level"] < 1
+                or not isinstance(record["module_paths"], list) or len(record["module_paths"]) < 2
+                or record["module_paths"][0] != data["early_path"]
+                or any(not isinstance(record[key], str) or "\n" in record[key] or "\r" in record[key]
+                       for key in ("title", "source_title", "kernel_path", "cmdline", "owner"))
+                or record["cmdline"].split().count(f"omen_acpi.variant={variant}") != 1):
+            raise Failure("managed kernel-entry record has an invalid schema")
+        for value in [record["kernel_path"], *record["module_paths"]]:
+            if not isinstance(value, str) or not re.fullmatch(r"boot\(\):/[^\x00\r\n#]+(?:#[0-9a-f]{128})?", value):
+                raise Failure("managed kernel-entry record has an invalid boot path")
     return data
 
 
@@ -462,9 +481,22 @@ def assert_stock_preserved(original: str, updated: str) -> None:
         raise Failure("Limine global options were modified")
     if supported_stock_fingerprint(original) != supported_stock_fingerprint(updated):
         raise Failure("stock CachyOS Limine entries were modified")
+    def raw_stock(text: str) -> tuple[str, dict[str, str]]:
+        lines = text.splitlines(keepends=True)
+        parsed = parse_entries(text)
+        primary, fallback = supported_entries(text)
+        blocks = {}
+        for name, item in {**primary, **fallback}.items():
+            body = lines[item["start"]:item["end"]]
+            while body and not body[-1].strip():
+                body.pop()  # Separators between entries are not entry bodies.
+            blocks[name] = "".join(body)
+        return "".join(lines[:parsed[0]["start"]]), blocks
+    if raw_stock(original) != raw_stock(updated):
+        raise Failure("stock entry bodies or global header bytes were modified")
 
 
-def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespace: tuple[int, int | None]) -> list[dict]:
+def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespace: tuple[int, int | None], *, allow_missing: bool = False) -> list[dict]:
     entries = parse_entries(text)
     names = reserved_titles(variant)
     candidates = [
@@ -481,8 +513,16 @@ def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespa
     ]
     if foreign:
         raise Failure("a reserved OMEN ACPI entry exists outside the active CachyOS namespace")
+    for item in entries:
+        if item in candidates or is_historical_entry(entries, item):
+            continue
+        claimed = any(value.startswith("omen-acpi-owned=") and re.search(rf"\bvariant={re.escape(variant)}(?:\s|$)", value)
+                      for value in item["comments"])
+        command = item["options"].get("cmdline", item["options"].get("kernel_cmdline", ""))
+        if claimed or f"omen_acpi.variant={variant}" in command.split():
+            raise Failure("an OMEN ACPI entry was renamed or moved outside its reserved identity")
     expected = manifest["entries"] if manifest else {}
-    if len(candidates) != len(expected):
+    if not allow_missing and len(candidates) != len(expected):
         raise Failure("reserved OMEN ACPI entries do not match managed state")
     actual: dict[str, dict] = {}
     for item in candidates:
@@ -491,11 +531,27 @@ def verify_owned_entries(text: str, manifest: dict | None, variant: str, namespa
         if kernel_id in actual:
             raise Failure("a reserved OMEN ACPI entry is duplicated")
         actual[kernel_id] = record
+    if set(actual) - set(expected):
+        raise Failure("an unrecorded reserved OMEN ACPI entry exists")
     for kernel_id, record in expected.items():
+        if allow_missing and kernel_id not in actual:
+            continue
         comparable = dict(record)
         comparable["source_title"] = ""
         if actual.get(kernel_id) != comparable:
             raise Failure(f"managed {variant} entry for {kernel_id} was modified")
+        item = next(item for item in candidates if normalized_owned(item)["kernel_id"] == kernel_id)
+        body = text.splitlines()[item["start"]:item["end"]]
+        while body and not body[-1].strip():
+            body.pop()
+        canonical = render_entry(record)
+        allowed = [canonical]
+        if record["title"] == legacy_variant_names(variant)[kernel_id]:
+            historical = list(canonical)
+            historical[1] = f"    comment: EXPERIMENTAL OMEN ACPI {kernel_id}; stock entry unchanged"
+            allowed.append(historical)
+        if body not in allowed:
+            raise Failure(f"managed {variant} entry body for {kernel_id} was modified")
     return candidates
 
 
@@ -600,10 +656,18 @@ def sync(esp: Path, state: Path, variant: str) -> None:
     first = next(iter(primary.values()))
     namespace = (first["level"], first["parent"])
     manifest = load_manifest(state, variant)
-    owned = verify_owned_entries(original, manifest, variant, namespace)
+    owned = verify_owned_entries(original, manifest, variant, namespace, allow_missing=True)
     early, early_sha = load_state_early(state)
-    target_dir = managed_payload_directory(esp, variant)
-    target = target_dir / "early.cpio"
+    early_path = f"boot():/omen-acpi/{variant}/early.cpio#{hashlib.blake2b(early).hexdigest()}"
+    if manifest and (manifest["early_sha256"] != early_sha or manifest["early_path"] != early_path):
+        raise Failure("managed early initramfs disagrees with its ownership manifest")
+    target = esp / "omen-acpi" / variant / "early.cpio"
+    missing_directories = []
+    for directory in (target.parent.parent, target.parent):
+        if directory.exists() or directory.is_symlink():
+            secure_directory(directory)
+        else:
+            missing_directories.append(directory)
     target_previous: bytes | None = None
     target_mode = 0o600
     if target.exists() or target.is_symlink():
@@ -615,13 +679,15 @@ def sync(esp: Path, state: Path, variant: str) -> None:
             allowed.add(manifest["early_sha256"])
         if sha256(target) not in allowed:
             raise Failure(f"managed ESP early initramfs was modified: {target}")
-    write_atomic(target, early, 0o600)
-    early_path = f"boot():/omen-acpi/{variant}/early.cpio#{blake2(target)}"
     records = {
         kernel_id: entry_record(variant, source, early_path)
         for kernel_id, source in primary.items()
     }
-    updated = rebuild_config(original, owned, records)
+    # Keep current blocks in place. Rebuilding one variant would otherwise move
+    # it ahead of its siblings, making every automatic multi-variant run write.
+    expected_owned = {key: dict(record, source_title="") for key, record in records.items()}
+    actual_owned = {record["kernel_id"]: record for record in map(normalized_owned, owned)}
+    updated = original if actual_owned == expected_owned else rebuild_config(original, owned, records)
     assert_stock_preserved(original, updated)
     data = {
         "schema": SCHEMA,
@@ -633,34 +699,43 @@ def sync(esp: Path, state: Path, variant: str) -> None:
     manifest_path = state / "kernel-entries.json"
     previous_manifest = manifest_path.read_bytes() if manifest_path.exists() else None
     config_changed = updated != original
+    manifest_bytes = (json.dumps(data, indent=2, sort_keys=True) + "\n").encode()
+    target_changed = target_previous != early
+    manifest_changed = previous_manifest != manifest_bytes
+    target_written = config_written = manifest_written = False
     try:
         if not configuration_unchanged(config, original, config_info):
             raise Failure("Limine configuration changed during reconciliation")
+        if target_changed:
+            managed_payload_directory(esp, variant)
+            target_written = True
+            write_atomic(target, early, 0o600)
         if config_changed:
+            config_written = True
             write_atomic(config, updated.encode("utf-8"), stat.S_IMODE(config_info.st_mode))
-        write_atomic(
-            manifest_path,
-            (json.dumps(data, indent=2, sort_keys=True) + "\n").encode(),
-            0o600,
-        )
+        if manifest_changed:
+            manifest_written = True
+            write_atomic(manifest_path, manifest_bytes, 0o600)
     except Exception:
-        if config_changed and config.read_text(encoding="utf-8", errors="strict") == updated:
+        if config_written and config.read_text(encoding="utf-8", errors="strict") == updated:
             write_atomic(config, original.encode("utf-8"), stat.S_IMODE(config_info.st_mode))
-        if previous_manifest is not None:
+        if manifest_written and previous_manifest is not None:
             write_atomic(manifest_path, previous_manifest, 0o600)
-        elif manifest_path.exists() and not manifest_path.is_symlink():
+        elif manifest_written and manifest_path.exists() and not manifest_path.is_symlink():
             manifest_path.unlink()
-        if target_previous is not None:
+        if target_written and target_previous is not None:
             write_atomic(target, target_previous, target_mode)
-        elif target.exists() and not target.is_symlink() and sha256(target) == early_sha:
+        elif target_written and target.exists() and not target.is_symlink() and sha256(target) == early_sha:
             target.unlink()
-            for directory in (target.parent, target.parent.parent):
-                try:
+        for directory in reversed(missing_directories):
+            try:
+                if directory.exists() and not directory.is_symlink():
+                    secure_directory(directory)
                     directory.rmdir()
-                except OSError:
-                    break
+            except OSError:
+                break
         raise
-    print(f"SYNCED\t{variant}\t{','.join(records)}")
+    print(f"{'SYNCED' if config_changed or target_changed or manifest_changed else 'CURRENT'}\t{variant}\t{','.join(records)}")
 
 
 def remove(esp: Path, state: Path, variant: str) -> None:
@@ -674,13 +749,13 @@ def remove(esp: Path, state: Path, variant: str) -> None:
     manifest = load_manifest(state, variant)
     if manifest is None:
         raise Failure("managed kernel-entry state is missing")
-    owned = verify_owned_entries(original, manifest, variant, namespace)
+    owned = verify_owned_entries(original, manifest, variant, namespace, allow_missing=True)
     lines = original.splitlines()
     trailing = original.endswith("\n")
     remove_lines = {
         index for item in owned for index in range(item["start"], item["end"])
     }
-    preceding = min(item["start"] for item in owned) - 1
+    preceding = min(item["start"] for item in owned) - 1 if owned else -1
     if preceding >= 0 and not lines[preceding]:
         remove_lines.add(preceding)
     updated_lines = [line for index, line in enumerate(lines) if index not in remove_lines]
@@ -688,23 +763,32 @@ def remove(esp: Path, state: Path, variant: str) -> None:
         updated_lines.pop()
     updated = "\n".join(updated_lines) + ("\n" if trailing else "")
     assert_stock_preserved(original, updated)
-    target = managed_payload_directory(esp, variant, create=False) / "early.cpio"
-    regular(target)
-    if sha256(target) != manifest["early_sha256"]:
-        raise Failure("managed ESP early initramfs was modified")
+    target = esp / "omen-acpi" / variant / "early.cpio"
+    for parent in (target.parent.parent, target.parent):
+        if parent.exists() or parent.is_symlink():
+            secure_directory(parent)
+    target_present = target.exists() or target.is_symlink()
+    if target_present:
+        regular(target)
+        if sha256(target) != manifest["early_sha256"]:
+            raise Failure("managed ESP early initramfs was modified")
     detached = target.with_name(f".early.cpio.removing.{os.getpid()}")
     if detached.exists() or detached.is_symlink():
         raise Failure(f"unexpected removal staging path: {detached}")
-    os.replace(target, detached)
+    if target_present:
+        os.replace(target, detached)
     try:
         if not configuration_unchanged(config, original, info):
             raise Failure("Limine configuration changed during removal")
-        write_atomic(config, updated.encode("utf-8"), stat.S_IMODE(info.st_mode))
+        if updated != original:
+            write_atomic(config, updated.encode("utf-8"), stat.S_IMODE(info.st_mode))
     except Exception:
-        os.replace(detached, target)
+        if target_present:
+            os.replace(detached, target)
         raise
     try:
-        detached.unlink()
+        if target_present:
+            detached.unlink()
     except OSError as error:
         try:
             if config.read_text(encoding="utf-8", errors="strict") != updated:
@@ -772,18 +856,26 @@ def status(esp: Path, state: Path | None, variant: str | None) -> int:
         return 0
     try:
         manifest = load_manifest(state, variant)
-        verify_owned_entries(text, manifest, variant, namespace)
+        owned = verify_owned_entries(text, manifest, variant, namespace, allow_missing=True)
         if manifest is not None:
             _early, state_sha = load_state_early(state)
-            target, canonical = resolve_limine(manifest["early_path"], esp)
+            canonical = f"boot():/omen-acpi/{variant}/early.cpio#{hashlib.blake2b(_early).hexdigest()}"
             expected_target = esp / "omen-acpi" / variant / "early.cpio"
             if (
                 canonical != manifest["early_path"]
-                or target != expected_target
                 or state_sha != manifest["early_sha256"]
-                or sha256(target) != state_sha
             ):
                 raise Failure("managed early initramfs state does not match the ESP")
+            target_missing = not expected_target.exists() and not expected_target.is_symlink()
+            if not target_missing:
+                target, _canonical = resolve_limine(manifest["early_path"], esp)
+                if target != expected_target or sha256(target) != state_sha:
+                    raise Failure("managed early initramfs state does not match the ESP")
+            else:
+                # Existing parent directories must still be trusted.
+                for parent in (esp / "omen-acpi", expected_target.parent):
+                    if parent.exists() or parent.is_symlink():
+                        secure_directory(parent)
     except Failure as error:
         print(f"VARIANT\t{variant}\tconflict\t{error}")
         return 3
@@ -799,11 +891,12 @@ def status(esp: Path, state: Path | None, variant: str | None) -> int:
     state_name = (
         "current"
         if current_ids == configured_ids and expected == manifest["entries"]
+        and len(owned) == len(configured_ids) and not target_missing
         else "stale"
     )
     for kernel_id in SUPPORTED:
         if kernel_id in current_ids or kernel_id in configured_ids:
-            configured = kernel_id in configured_ids
+            configured = any(normalized_owned(item)["kernel_id"] == kernel_id for item in owned)
             present = kernel_id in current_ids
             print(
                 f"ENTRY\t{variant}\t{kernel_id}\t"

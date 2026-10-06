@@ -10,6 +10,7 @@ invocations deliberately have no option for selecting arbitrary paths.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import ctypes
 import datetime as dt
 import errno
@@ -155,14 +156,49 @@ def rename_noreplace(source: Path, target: Path) -> None:
 
 
 def acquire_lock():
-    path = manager_lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if path.parent.is_symlink():
-        raise Failure("unsafe lock directory")
-    os.chmod(path.parent, 0o700)
-    stream = path.open("a+")
-    fcntl.flock(stream, fcntl.LOCK_EX)
-    return stream
+    locks = ExitStack()
+    expected_owner = os.geteuid() if os.environ.get("OMEN_ACPI_TEST_ROOT") else 0
+    try:
+        runtime = rooted("/run")
+        info = runtime.lstat()
+        if not stat.S_ISDIR(info.st_mode) or runtime.is_symlink() or info.st_uid != expected_owner or info.st_mode & 0o022:
+            raise Failure("unsafe runtime directory")
+        for path, descriptor, flag in (
+            (rooted("/run/lock/boot-partition.lock"), 200, "OMEN_ACPI_BOOT_LOCK_FD200_HELD"),
+            (manager_lock_path(), 9, "OMEN_ACPI_LOCK_FD9_HELD"),
+        ):
+            path.parent.mkdir(exist_ok=True, mode=0o700)
+            info = path.parent.lstat()
+            if not stat.S_ISDIR(info.st_mode) or path.parent.is_symlink() or info.st_uid != expected_owner or info.st_mode & 0o022:
+                raise Failure("unsafe lock directory")
+            if path_present(path):
+                info = require_regular_file(path, owner=expected_owner)
+                if info.st_mode & 0o022:
+                    raise Failure("unsafe lock permissions")
+            if os.environ.get(flag) == "1":
+                info, actual = path.lstat(), os.fstat(descriptor)
+                if (info.st_dev, info.st_ino) != (actual.st_dev, actual.st_ino):
+                    raise Failure("invalid inherited lock descriptor")
+                probe = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+                try:
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        pass
+                    else:
+                        raise Failure("inherited descriptor did not hold its lock")
+                finally:
+                    os.close(probe)
+                stream = locks.enter_context(os.fdopen(os.dup(descriptor), "a+"))
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                stream = locks.enter_context(os.fdopen(fd, "a"))
+                fcntl.flock(stream, fcntl.LOCK_EX)
+        return locks
+    except Exception:
+        locks.close()
+        raise
 
 
 def read_machine() -> tuple[str, str, str]:

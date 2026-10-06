@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Maintains installed S5, Combined and S5 VFIO entries after manual Limine
+  rebuilds and snapshot sync through an owned `85-omen-acpi-refresh` post hook.
+- Moves the ALPM fallback to `/etc/pacman.d/hooks/99-omen-acpi-refresh.hook` and
+  covers AMD/Intel microcode and `linux-firmware*` package transactions.
+- Shares Limine's boot-partition lock before the toolkit lock, validates inherited
+  descriptors, prevents recursive refresh and records fail-soft lock contention.
+- Reconstructs verified missing entries, preserves modified/foreign state, and
+  avoids boot-file writes when entries and payloads are current.
+- Installs, migrates and removes maintenance hooks transactionally; doctor checks
+  hook integrity and recorded outcomes and can repair missing owned hooks.
+- Includes S5 VFIO in refresh/status/remove-all and uninstall preflight while
+  retaining the S5/Combined meaning of `both` and all existing ACPI transforms.
+
 - Adds an optional Windows PowerShell helper and documentation for configuring
   the Windows RTC as UTC in Linux/Windows dual-boot systems. The helper is
   separate from the Linux ACPI transformation, preserves Windows Time/NTP,

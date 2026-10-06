@@ -1326,6 +1326,11 @@ refresh_variants() {
             item_rc=0
             refresh_one combined || item_rc=$?
             (( item_rc > rc )) && rc=$item_rc
+            if [[ "$requested" == all ]]; then
+                item_rc=0
+                refresh_one s5-vfio || item_rc=$?
+                (( item_rc > rc )) && rc=$item_rc
+            fi
             ;;
     esac
     return "$rc"
@@ -1416,10 +1421,11 @@ remove_variants() {
     fi
     ensure_dependencies remove
     case "$requested" in
-        s5|combined) remove_one "$requested" ;;
+        s5|combined|s5-vfio) remove_one "$requested" ;;
         both|all)
             remove_one s5
             remove_one combined
+            [[ "$requested" != all ]] || remove_one s5-vfio
             ;;
     esac
 }
@@ -1471,6 +1477,11 @@ status_variants() {
             item_rc=0
             status_one combined || item_rc=$?
             (( item_rc > rc )) && rc=$item_rc
+            if [[ "$requested" == all ]]; then
+                item_rc=0
+                status_one s5-vfio || item_rc=$?
+                (( item_rc > rc )) && rc=$item_rc
+            fi
             ;;
     esac
     return "$rc"
@@ -1592,6 +1603,17 @@ doctor() {
 
     secure_boot="$(secure_boot_state)"
     printf 'Secure Boot: %s\n' "$secure_boot"
+
+    if [[ -f "$APP_ROOT/scripts/07-maintenance.py" ]]; then
+        ensure_admin
+        if [[ "$fix" == --fix ]]; then
+            "$SUDO_BIN" -- "$MANAGER" maintenance-fix \
+                || warn "Maintenance hook repair failed; foreign or modified hooks were preserved."
+            "$SUDO_BIN" -- "$APP_ROOT/scripts/06-alpm-refresh.sh"
+        fi
+        "$SUDO_BIN" -- python3 "$APP_ROOT/scripts/07-maintenance.py" status --source "$APP_ROOT" \
+            || warn "Automatic maintenance needs attention; inspect the HOOK/AUTO results above."
+    fi
 
     if [[ "$fix" == "--fix" ]]; then
         local variant schema

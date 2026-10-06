@@ -183,3 +183,21 @@ division between Paolo De Marinis's direction and validation and OpenAI Codex's
 implementation support is stated in the README. That disclosure is part of the
 technical documentation because it defines what kind of review and assurance the
 repository can claim.
+
+## Automatic maintenance
+
+`06-alpm-refresh.sh` is the shared noninteractive entry point for the Limine
+post hook and final ALPM hook. It maintains modern installed variants only,
+records success/failure per variant, and never fails the calling update.
+
+`08-locks.sh` takes Limine's shared boot-partition lock on descriptor 200 before
+the toolkit state lock on descriptor 9. Inherited descriptors are checked against
+their filesystem identities and existing locks. Automatic acquisition is
+nonblocking. Toolkit-initiated Limine calls reuse the boot lock and suppress
+recursive OMEN maintenance while allowing other Limine hooks to run.
+
+`07-maintenance.py` validates root-owned hook files, snapshots their prior bytes
+and modes, applies replacements/removal atomically and restores them on failure.
+The installer uses a verified private source copy for this transaction. Doctor
+uses the installed hook copies to check or repair maintenance. Diagnostic JSON
+is separate from the kernel-entry ownership manifest and grants no boot rights.

@@ -10,15 +10,15 @@ Run `omen-acpi` without arguments to open the interactive dashboard. The same
 operations are available as explicit subcommands:
 
 ```text
-omen-acpi setup [s5|combined|both]
+omen-acpi setup [s5|combined|s5-vfio|both]
 omen-acpi doctor [--fix]
 omen-acpi dependencies [--install]
 omen-acpi collect
-omen-acpi build <s5|combined|both> [SOURCE_ARCHIVE]
-omen-acpi install <s5|combined|both> [BUILD_ARCHIVE]
-omen-acpi refresh [s5|combined|all]
-omen-acpi status [s5|combined|all]
-omen-acpi remove <s5|combined|all>
+omen-acpi build <s5|combined|s5-vfio|both> [SOURCE_ARCHIVE]
+omen-acpi install <s5|combined|s5-vfio|both> [BUILD_ARCHIVE]
+omen-acpi refresh [s5|combined|s5-vfio|all]
+omen-acpi status [s5|combined|s5-vfio|all]
+omen-acpi remove <s5|combined|s5-vfio|all>
 omen-acpi artifacts
 omen-acpi logs
 omen-acpi resume
@@ -155,8 +155,9 @@ Managed lifecycle states include:
 - `CONFLICT / BLOCKED`: state is partial, mixed or externally modified and is
   never changed automatically;
 - stale kernel/initramfs: run `omen-acpi refresh` before booting the owned entry.
-  On CachyOS/Arch the installed ALPM hook normally does this after kernel,
-  mkinitcpio, Limine, `nvidia-utils`, `systemd` and `*-dkms` package transactions.
+  On CachyOS/Arch the owned Limine post hook covers manual rebuilds and snapshot
+  sync. The final ALPM hook also covers relevant package transactions, including
+  microcode and `linux-firmware*` updates.
 
 ## Entry lifecycle
 
@@ -167,15 +168,18 @@ initramfs and NVIDIA modules while keeping standard and LTS entry identity
 separate.
 
 After a kernel, initramfs or Limine update—or after installing/removing LTS—run
-`omen-acpi refresh` if the ALPM hook is absent or reported a warning:
+`omen-acpi refresh` if maintenance hooks are absent or reported a warning:
 
 ```bash
 omen-acpi refresh all
 ```
 
-Use `s5` or `combined` instead of `all` when appropriate. Refresh verifies the
-old ownership record, current stock paths and BLAKE2 hashes, initramfs contents
-and the new result before committing. Repeating it makes no duplicate entries.
+Use `s5`, `combined` or `s5-vfio` instead of `all` when appropriate. `all`
+maintains every installed variant; setup/build/install `both` still selects only
+S5 and Combined. Refresh verifies the old ownership record, current stock paths
+and BLAKE2 hashes, initramfs contents and the new result before committing.
+Repeating it makes no duplicate entries and does not rewrite current boot assets. Missing entries with trusted state are classified as stale and safely
+recreated; changed ownership markers, renamed entries and duplicates are blocked.
 Recognized v2.2.0 single-kernel managed state is migrated in place using its
 already verified AML; pre-managed legacy state retains its normal removal path.
 
@@ -186,6 +190,28 @@ the freshly created entry.
 The independent recovery lifecycle is prepare from a clean stock boot, recover
 or verify the reserved entry, and explicit removal. Its detailed invariants are
 documented in [`recovery.md`](recovery.md).
+
+## Automatic maintenance diagnostics
+
+Run `omen-acpi doctor` to inspect both installed hook files and the latest result
+for each installed variant. `HOOK` rows report `current`, `missing`, `modified`
+or `unsafe`; `AUTO` rows report `current`, `failed`, `not-run` or `unsafe`.
+A successful refresh proves the current entry metadata, not that the override
+was loaded or that shutdown was physically validated.
+
+Each modern variant stores `auto-refresh.json` beside its managed state. Its
+schema records the variant, UTC attempt time, caller and exit code. Warnings go
+to stderr and `journalctl -t omen-acpi`; lock contention records exit code 75.
+Automatic callers always exit successfully, even when reconciliation fails.
+
+`omen-acpi doctor --fix` repairs missing owned hook files, verifies installed
+ones and retries maintenance. Modified content is preserved. The post hook runs
+before Limine's hash/enrollment/remount hooks; the ALPM fallback runs at priority
+99. Direct `mkinitcpio` invocations that bypass Limine's generator still require
+`limine-mkinitcpio` or `omen-acpi refresh` after valid stock entries are generated.
+
+Machine/BIOS changes block existing AML reuse. Use a stock boot to collect and
+validate new tables; maintenance does not rebuild firmware overrides.
 
 ## Dependencies
 

@@ -11,8 +11,6 @@ readonly TARGET_ROOT="/usr/local/lib/omen-acpi-fix"
 readonly TARGET_BIN="/usr/local/bin/omen-acpi"
 readonly TARGET_DOC="/usr/local/share/doc/omen-acpi-fix"
 readonly MANAGER="$TARGET_ROOT/scripts/03-manage-limine-entry.sh"
-readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
-readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 
 removed_root=''
 removed_bin=''
@@ -22,6 +20,9 @@ bin_moved=0
 doc_moved=0
 removal_started=0
 removal_committed=0
+hook_transaction=''
+hooks_prepared=0
+preserve_hook_transaction=0
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -64,6 +65,17 @@ rollback_removal() {
             warn "Public-command recovery file remains at: $removed_bin"
         fi
     fi
+    if (( hooks_prepared )); then
+        local helper="$TARGET_ROOT/scripts/07-maintenance.py"
+        [[ -f "$helper" && ! -L "$helper" ]] || helper="$removed_root/scripts/07-maintenance.py"
+        if [[ -f "$helper" && ! -L "$helper" ]]; then
+            python3 "$helper" rollback --transaction "$hook_transaction" \
+            || { preserve_hook_transaction=1; warn "Hook rollback needs attention; transaction retained at $hook_transaction"; }
+        else
+            preserve_hook_transaction=1
+            warn "Hook rollback helper is unavailable; transaction retained at $hook_transaction"
+        fi
+    fi
     removal_started=0
 }
 
@@ -73,6 +85,9 @@ on_exit() {
     set +e
     if (( rc != 0 && ! removal_committed )); then
         rollback_removal
+    fi
+    if (( ! preserve_hook_transaction )) && [[ -n "$hook_transaction" && "$hook_transaction" == /var/tmp/omen-acpi-hooks.* ]]; then
+        rm -rf -- "$hook_transaction"
     fi
     exit "$rc"
 }
@@ -88,7 +103,7 @@ if (($# > 0)); then
     esac
 fi
 
-for command in cmp flock install mv realpath rm stat; do
+for command in python3 id mktemp cmp flock install mv realpath rm stat; do
     command -v "$command" >/dev/null 2>&1 || die "Required command not found: $command"
 done
 
@@ -97,33 +112,14 @@ if (( EUID != 0 )); then
     exec /usr/bin/sudo -- "$(realpath -- "$0")" "$@"
 fi
 
-[[ -d /run && ! -L /run && "$(stat -c '%u' -- /run)" == "0" ]] \
-    || die "The runtime directory is unavailable or unsafe: /run"
-runtime_permissions="$(stat -c '%A' -- /run)"
-[[ "${runtime_permissions:5:1}" != "w" && "${runtime_permissions:8:1}" != "w" ]] \
-    || die "The runtime directory is group- or world-writable: /run"
-if [[ ! -e "$LOCK_DIRECTORY" && ! -L "$LOCK_DIRECTORY" ]]; then
-    install -d -o root -g root -m 0700 "$LOCK_DIRECTORY"
-fi
-[[ -d "$LOCK_DIRECTORY" && ! -L "$LOCK_DIRECTORY" \
-    && "$(stat -c '%u' -- "$LOCK_DIRECTORY")" == "0" \
-    && "$(stat -c '%a' -- "$LOCK_DIRECTORY")" == "700" ]] \
-    || die "The toolkit lock directory is unsafe: $LOCK_DIRECTORY"
-if path_exists "$LOCK_FILE"; then
-    [[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" \
-        && "$(stat -c '%u' -- "$LOCK_FILE")" == "0" ]] \
-        || die "The toolkit lock file is unsafe: $LOCK_FILE"
-fi
-exec 9>>"$LOCK_FILE"
-flock -x 9 || die "Could not acquire the OMEN ACPI installation lock."
-
-for state in /var/lib/omen-acpi-s5-test /var/lib/omen-acpi-combined-test /var/lib/omen-acpi-stock-recovery; do
+for state in /var/lib/omen-acpi-s5-test /var/lib/omen-acpi-combined-test /var/lib/omen-acpi-s5-vfio-test /var/lib/omen-acpi-stock-recovery; do
     [[ ! -e "$state" && ! -L "$state" ]] \
         || die "Managed state still exists at $state. Remove it with omen-acpi first; stock recovery is never deleted implicitly."
 done
 for dropin in \
     /etc/limine-entry-tool.d/90-omen-acpi-s5-test.conf \
-    /etc/limine-entry-tool.d/91-omen-acpi-combined-test.conf; do
+    /etc/limine-entry-tool.d/91-omen-acpi-combined-test.conf \
+    /etc/limine-entry-tool.d/92-omen-acpi-s5-vfio-test.conf; do
     [[ ! -e "$dropin" && ! -L "$dropin" ]] \
         || die "Managed Limine drop-in still exists at $dropin. Remove it through omen-acpi first."
 done
@@ -159,24 +155,28 @@ cmp -s -- "$TARGET_BIN" "$TARGET_ROOT/omen-acpi" \
 [[ -f "$MANAGER" && ! -L "$MANAGER" && -x "$MANAGER" ]] \
     || die "The installed manager is missing or unsafe: $MANAGER"
 
+# shellcheck source=scripts/08-locks.sh
+[[ -f "$TARGET_ROOT/scripts/08-locks.sh" && ! -L "$TARGET_ROOT/scripts/08-locks.sh" ]] \
+    || die "Shared lock helper is missing; repair the installation before uninstalling."
+source "$TARGET_ROOT/scripts/08-locks.sh"
+omen_acpi_acquire_locks || die "Could not acquire the shared boot/toolkit locks."
+export OMEN_ACPI_INTERNAL_OPERATION=1
+# Check again under the locks so a concurrent install cannot escape preflight.
+for state in /var/lib/omen-acpi-{s5,combined,s5-vfio}-test /var/lib/omen-acpi-stock-recovery; do
+    [[ ! -e "$state" && ! -L "$state" ]] || die "Managed state still exists at $state."
+done
+
 # The uninstaller already owns descriptor 9 for the shared toolkit lock. The
 # manager validates and reuses that inherited descriptor, locates the mounted
 # ESP with its normal fail-closed parser, and proves that neither reserved entry
 # name remains before any toolkit path is detached.
 OMEN_ACPI_LOCK_FD9_HELD=1 "$MANAGER" pre-uninstall-check
 
-alpm_hook_source="$TARGET_ROOT/alpm/90-omen-acpi-refresh.hook"
-alpm_hook_target="/usr/share/libalpm/hooks/90-omen-acpi-refresh.hook"
-if path_exists "$alpm_hook_target"; then
-    if [[ -f "$alpm_hook_target" && ! -L "$alpm_hook_target" \
-        && -f "$alpm_hook_source" && ! -L "$alpm_hook_source" ]] \
-        && cmp -s -- "$alpm_hook_target" "$alpm_hook_source"; then
-        rm -f -- "$alpm_hook_target" \
-            || die "Could not remove the owned ALPM refresh hook: $alpm_hook_target"
-    else
-        die "ALPM refresh hook at $alpm_hook_target is missing, modified or not owned by this installation; inspect it before uninstalling."
-    fi
-fi
+hook_transaction="$(mktemp -d /var/tmp/omen-acpi-hooks.XXXXXX)"
+trap on_exit EXIT
+python3 "$TARGET_ROOT/scripts/07-maintenance.py" prepare --source "$TARGET_ROOT" \
+    --previous "$TARGET_ROOT" --transaction "$hook_transaction" --remove
+hooks_prepared=1
 
 transaction_token="$$"
 removed_root="/usr/local/lib/.omen-acpi-fix.removed.$transaction_token"
@@ -189,6 +189,7 @@ done
 
 trap on_exit EXIT
 removal_started=1
+python3 "$TARGET_ROOT/scripts/07-maintenance.py" apply --transaction "$hook_transaction"
 
 bin_moved=1
 mv -T -- "$TARGET_BIN" "$removed_bin"
@@ -197,6 +198,8 @@ mv -T -- "$TARGET_DOC" "$removed_doc"
 root_moved=1
 mv -T -- "$TARGET_ROOT" "$removed_root"
 removal_committed=1
+rm -rf -- "$hook_transaction"
+hook_transaction=''
 trap - EXIT
 
 cleanup_failed=0

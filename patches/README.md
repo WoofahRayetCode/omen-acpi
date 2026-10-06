@@ -139,7 +139,6 @@ These are structural and round-trip guarantees about the generated table. The
 real-hardware observations and their limits are recorded separately in
 [`../docs/validation.md`](../docs/validation.md).
 
-
 ## `s5-vfio`: experimental VFIO / Looking Glass path
 
 OEM revision: `0x0107200C`
