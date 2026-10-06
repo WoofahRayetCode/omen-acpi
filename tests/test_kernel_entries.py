@@ -28,6 +28,7 @@ entries = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entries)
 
 
+@unittest.skipUnless(os.name == "posix", "Linux ownership and filesystem semantics required")
 class KernelEntriesTest(unittest.TestCase):
     def setUp(self):
         self.temp = Path(tempfile.mkdtemp(prefix="omen-kernel-entries-test."))
@@ -460,6 +461,146 @@ refresh_action
         tampered = original.replace("default_entry: 1", "default_entry: 2", 1)
         with self.assertRaises(entries.Failure):
             entries.assert_stock_preserved(original, tampered)
+
+    def test_missing_entries_are_stale_and_reconstructed(self):
+        self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
+        self.sync()
+        config = self.esp / "limine.conf"
+        original = config.read_text()
+        manifest = entries.load_manifest(self.state, "s5")
+        primary, _ = entries.supported_entries(original)
+        first = next(iter(primary.values()))
+        owned = entries.verify_owned_entries(original, manifest, "s5", (first["level"], first["parent"]))
+        lines = original.splitlines(keepends=True)
+        block = owned[0]
+        config.write_text("".join(lines[:block["start"]] + lines[block["end"]:]))
+        self.assertEqual(entries.status(self.esp, self.state, "s5"), 3)
+        self.sync()
+        self.assertEqual(entries.status(self.esp, self.state, "s5"), 0)
+        self.assertEqual(len(self.managed_titles()), 2)
+        # A generator can remove every custom entry while retaining stock ones.
+        self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
+        self.assertEqual(entries.status(self.esp, self.state, "s5"), 3)
+        self.sync()
+        self.assertEqual(entries.status(self.esp, self.state, "s5"), 0)
+
+    def test_current_refresh_does_not_write(self):
+        self.sync()
+        with mock.patch.object(entries, "write_atomic", side_effect=AssertionError("unnecessary write")):
+            self.sync()
+
+    def test_missing_entries_and_payload_can_be_removed_without_recreation(self):
+        self.sync()
+        self.write_stock(("linux-cachyos",))
+        (self.esp / "omen-acpi/s5/early.cpio").unlink()
+        entries.remove(self.esp, self.state, "s5")
+        self.assertEqual(self.managed_titles(), [])
+        self.assertFalse((self.esp / "omen-acpi/s5").exists())
+
+    def test_renamed_owned_entry_is_not_recreated(self):
+        self.sync()
+        config = self.esp / "limine.conf"
+        config.write_text(config.read_text().replace("zz-OMEN ACPI S5", "Renamed override"))
+        before = config.read_bytes()
+        with self.assertRaises(entries.Failure):
+            self.sync()
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_modified_survivor_blocks_missing_entry_repair(self):
+        self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
+        self.sync()
+        config = self.esp / "limine.conf"
+        text = config.read_text()
+        parsed = entries.parse_entries(text)
+        missing = next(item for item in parsed if item["title"] == "zz-OMEN ACPI S5 LTS")
+        lines = text.splitlines(keepends=True)
+        config.write_text("".join(lines[:missing["start"]] + lines[missing["end"]:]).replace("omen-acpi-owned=v1", "omen-acpi-owned=modified", 1))
+        before = config.read_bytes()
+        with self.assertRaises(entries.Failure):
+            self.sync()
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_manifest_commit_failure_restores_config_and_missing_payload(self):
+        self.sync()
+        self.write_stock(("linux-cachyos", "linux-cachyos-lts"))
+        target = self.esp / "omen-acpi/s5/early.cpio"
+        target.unlink()
+        config = self.esp / "limine.conf"
+        manifest = self.state / "kernel-entries.json"
+        before_config, before_manifest = config.read_bytes(), manifest.read_bytes()
+        original_write = entries.write_atomic
+        failed = False
+        def fail_once(path, content, mode):
+            nonlocal failed
+            if path == manifest and not failed:
+                failed = True
+                raise OSError("injected manifest failure")
+            original_write(path, content, mode)
+        with mock.patch.object(entries, "write_atomic", side_effect=fail_once):
+            with self.assertRaises(OSError):
+                self.sync()
+        self.assertEqual(config.read_bytes(), before_config)
+        self.assertEqual(manifest.read_bytes(), before_manifest)
+        self.assertFalse(target.exists())
+
+    def test_stock_preservation_checks_raw_body_bytes(self):
+        original = (self.esp / "limine.conf").read_text()
+        tampered = original.replace("    protocol: linux", "  protocol: linux", 1)
+        with self.assertRaises(entries.Failure):
+            entries.assert_stock_preserved(original, tampered)
+
+
+class EntryRulesTest(unittest.TestCase):
+    """Portable checks of entry identity and preservation, without filesystem mocks."""
+
+    def setUp(self):
+        self.stock = (
+            "timeout: 5\ndefault_entry: 2\n/+CachyOS\n//linux-cachyos\n"
+            "    comment: kernel-id=linux-cachyos\n    protocol: linux\n"
+            "    kernel_path: boot():/stock/vmlinuz\n"
+            "    module_path: boot():/stock/initramfs\n    cmdline: quiet root=UUID=test\n"
+        )
+        source = {"kernel_id": "linux-cachyos", "title": "linux-cachyos", "level": 2,
+                  "kernel_path": "boot():/stock/vmlinuz", "command": "quiet root=UUID=test",
+                  "module_data": [(None, "boot():/stock/ucode", []), (None, "boot():/stock/initramfs", [])]}
+        self.record = entries.entry_record("s5", source, "boot():/omen-acpi/s5/early.cpio#" + "a" * 128)
+        self.block = "\n".join(entries.render_entry(self.record)) + "\n"
+        self.manifest = {"entries": {"linux-cachyos": self.record}}
+
+    def test_verified_absence_is_recoverable_but_strict_validation_still_rejects_it(self):
+        with self.assertRaises(entries.Failure):
+            entries.verify_owned_entries(self.stock, self.manifest, "s5", (2, 0))
+        self.assertEqual(entries.verify_owned_entries(self.stock, self.manifest, "s5", (2, 0), allow_missing=True), [])
+
+    def test_modified_or_renamed_survivors_block_reconstruction(self):
+        for changed in (self.block.replace("zz-OMEN ACPI S5", "Renamed override"),
+                        self.block.replace("root=UUID=test", "root=UUID=other"),
+                        self.block.replace("omen-acpi-owned=v1", "omen-acpi-owned=modified")):
+            with self.subTest(changed=changed):
+                with self.assertRaises(entries.Failure):
+                    entries.verify_owned_entries(self.stock + changed, self.manifest, "s5", (2, 0), allow_missing=True)
+
+    def test_duplicate_survivors_block_reconstruction(self):
+        with self.assertRaises(entries.Failure):
+            entries.verify_owned_entries(self.stock + self.block * 2, self.manifest, "s5", (2, 0), allow_missing=True)
+
+    def test_historical_snapshot_entries_are_preserved(self):
+        historical = "//Snapshots\n" + self.block.replace("//zz-", "///zz-")
+        text = self.stock + historical
+        owned = entries.verify_owned_entries(text, self.manifest, "s5", (2, 0), allow_missing=True)
+        updated = entries.rebuild_config(text, owned, self.manifest["entries"])
+        self.assertIn(historical, updated)
+        entries.assert_stock_preserved(text, updated)
+
+    def test_early_cpio_precedes_microcode_and_initramfs(self):
+        self.assertEqual(self.record["module_paths"][1:], ["boot():/stock/ucode", "boot():/stock/initramfs"])
+        self.assertTrue(self.record["module_paths"][0].startswith("boot():/omen-acpi/s5/early.cpio#"))
+
+    def test_stock_raw_bytes_and_global_default_are_protected(self):
+        for changed in (self.stock.replace("    protocol", "  protocol"),
+                        self.stock.replace("default_entry: 2", "default_entry: 3")):
+            with self.assertRaises(entries.Failure):
+                entries.assert_stock_preserved(self.stock, changed)
 
 
 if __name__ == "__main__":

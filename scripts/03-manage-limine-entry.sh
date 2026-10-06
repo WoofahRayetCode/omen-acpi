@@ -11,8 +11,6 @@ export PATH="/usr/bin:/bin"
 # explicitly opted-in machine. The normal CachyOS entry is never replaced.
 
 readonly VERSION="2.5.0"
-readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
-readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly BOOT_PROBE="$SCRIPT_DIR/00-probe-boot.sh"
 readonly KERNEL_ENTRIES="$SCRIPT_DIR/05-kernel-entries.py"
@@ -180,35 +178,16 @@ require_root() {
 }
 
 acquire_lock() {
-    local inherited_target lock_owner lock_mode
+    # shellcheck source=scripts/08-locks.sh
+    source "$SCRIPT_DIR/08-locks.sh"
+    omen_acpi_acquire_locks || die "Could not acquire the shared boot/toolkit locks."
+    export OMEN_ACPI_INTERNAL_OPERATION=1
+}
 
-    if [[ "${OMEN_ACPI_LOCK_FD9_HELD:-0}" == "1" ]]; then
-        inherited_target="$(readlink -f /proc/self/fd/9 2>/dev/null || true)"
-        [[ "$inherited_target" == "$LOCK_FILE" ]] \
-            || die "The inherited installation lock descriptor is invalid."
-        flock -n 9 \
-            || die "The inherited installation lock is not held."
-        return 0
-    fi
-
-    [[ -d /run && ! -L /run && "$(stat -c '%u' -- /run)" == "0" ]] \
-        || die "The runtime directory is unavailable or unsafe: /run"
-    if [[ ! -e "$LOCK_DIRECTORY" && ! -L "$LOCK_DIRECTORY" ]]; then
-        install -d -o root -g root -m 0700 "$LOCK_DIRECTORY"
-    fi
-    [[ -d "$LOCK_DIRECTORY" && ! -L "$LOCK_DIRECTORY" ]] \
-        || die "The toolkit lock directory is unavailable or unsafe: $LOCK_DIRECTORY"
-    lock_owner="$(stat -c '%u' -- "$LOCK_DIRECTORY")"
-    lock_mode="$(stat -c '%a' -- "$LOCK_DIRECTORY")"
-    [[ "$lock_owner" == "0" && "$lock_mode" == "700" ]] \
-        || die "The toolkit lock directory must be root-owned with mode 0700: $LOCK_DIRECTORY"
-    if [[ -e "$LOCK_FILE" || -L "$LOCK_FILE" ]]; then
-        [[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" \
-            && "$(stat -c '%u' -- "$LOCK_FILE")" == "0" ]] \
-            || die "The toolkit lock file is unsafe: $LOCK_FILE"
-    fi
-    exec 9>>"$LOCK_FILE"
-    flock -x 9 || die "Could not acquire the installation lock: $LOCK_FILE"
+# We already own Limine's shared lock; preserve other boot hooks while preventing
+# its wrapper from reopening descriptor 200 and deadlocking on our own lock.
+run_limine_entry_tool() {
+    command limine-entry-tool --no-mutex "$@"
 }
 
 read_machine() {
@@ -1995,7 +1974,7 @@ add_test_entry() {
         comment="EXPERIMENTAL: unvalidated opt-in ${VARIANT} DSDT; normal entry unchanged"
     fi
 
-    limine-entry-tool --add-kernel \
+    run_limine_entry_tool --add-kernel \
         "$ENTRY_NAME" \
         "$candidate/initramfs.img" \
         "$candidate/kernel.img" \
@@ -2058,7 +2037,7 @@ rollback_new_install() {
 
     warn "Installation failed; restoring the pre-install Limine configuration."
     if config_contains_entry "$config"; then
-        limine-entry-tool --remove-kernel "$ENTRY_NAME" --quiet >/dev/null 2>&1 \
+        run_limine_entry_tool --remove-kernel "$ENTRY_NAME" --quiet >/dev/null 2>&1 \
             || failed=1
     fi
     cp -a "$backup" "$config" || failed=1
@@ -2170,6 +2149,7 @@ refresh_action() {
         return 0
     fi
     verify_state_identity
+    managed_state_valid || die "Managed AML or early initramfs is missing, modified or unsafe."
     read_machine
     current_machine="$MACHINE_PRODUCT"$'\t'"$MACHINE_BOARD"$'\t'"$MACHINE_BIOS"
     if stored_machine="$(state_machine 2>/dev/null)"; then
@@ -2209,7 +2189,7 @@ refresh_action() {
     install -o root -g root -m 0600 "$work/early.cpio" "$STATE_DIR/early.cpio"
     sha256_file "$STATE_DIR/early.cpio" > "$STATE_DIR/early.sha256"
 
-    if ! limine-entry-tool --remove-kernel "$ENTRY_NAME" --quiet \
+    if ! run_limine_entry_tool --remove-kernel "$ENTRY_NAME" --quiet \
         || config_contains_entry "$config" \
         || ! rm -f -- "$DROPIN"; then
         rollback_managed_removal "$config" "$backup" "$STATE_DIR" "$STATE_DIR" || true
@@ -2295,13 +2275,13 @@ rollback_legacy_removal() {
     warn "Legacy removal failed; attempting to recreate the validated entry."
     entry_count="$(config_entry_count "$config" 2>/dev/null || printf invalid)"
     if [[ "$entry_count" != "0" ]]; then
-        limine-entry-tool --remove-kernel "$ENTRY_NAME" --quiet >/dev/null 2>&1 \
+        run_limine_entry_tool --remove-kernel "$ENTRY_NAME" --quiet >/dev/null 2>&1 \
             || failed=1
     fi
 
     install -o root -g root -m 0644 "$backup/dropin.conf" "$DROPIN" \
         || failed=1
-    if ! limine-entry-tool --add-kernel \
+    if ! run_limine_entry_tool --add-kernel \
         "$ENTRY_NAME" \
         "$backup/initramfs.img" \
         "$backup/kernel.img" \
@@ -2349,10 +2329,10 @@ rollback_managed_removal() {
     local failed=0
 
     warn "Managed removal failed; attempting to recreate the entry."
-    limine-entry-tool --remove-kernel "$ENTRY_NAME" --quiet >/dev/null 2>&1 || true
+    run_limine_entry_tool --remove-kernel "$ENTRY_NAME" --quiet >/dev/null 2>&1 || true
 
     install_dropin "$previous_state/dropin.conf" || failed=1
-    if ! limine-entry-tool --add-kernel \
+    if ! run_limine_entry_tool --add-kernel \
         "$ENTRY_NAME" \
         "$previous_state/initramfs.img" \
         "$previous_state/kernel.img" \
@@ -2719,7 +2699,7 @@ remove_legacy_action() {
         die "Could not stage the legacy state in its recovery directory."
     fi
     state_staged=1
-    if ! limine-entry-tool --remove-kernel "$ENTRY_NAME" --quiet \
+    if ! run_limine_entry_tool --remove-kernel "$ENTRY_NAME" --quiet \
         || [[ "$(config_entry_count "$config" 2>/dev/null || printf invalid)" != "0" ]]; then
         rollback_legacy_removal "$config" "$backup" "$work" "$state_staged" || true
         die "The legacy entry could not be removed safely."
@@ -2820,7 +2800,7 @@ remove_action() {
     config_backup="$work/limine.conf.before-remove"
     cp -a "$config" "$config_backup"
 
-    if ! limine-entry-tool --remove-kernel "$ENTRY_NAME" --quiet; then
+    if ! run_limine_entry_tool --remove-kernel "$ENTRY_NAME" --quiet; then
         rollback_managed_removal "$config" "$config_backup" "$STATE_DIR" "$STATE_DIR" || true
         die "limine-entry-tool could not remove the entry. Managed state was preserved."
     fi
@@ -2929,6 +2909,12 @@ main() {
     local action="${1:-help}"
 
     case "$action" in
+        maintenance-fix)
+            (($# == 1)) || die "Usage: $0 maintenance-fix"
+            require_root maintenance-fix
+            acquire_lock
+            python3 "$SCRIPT_DIR/07-maintenance.py" repair --source "$(dirname -- "$SCRIPT_DIR")"
+            ;;
         install)
             (($# == 3)) || die "Usage: $0 install VARIANT BUILD_ARCHIVE"
             select_variant "$2"

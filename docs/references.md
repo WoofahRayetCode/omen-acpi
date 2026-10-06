@@ -26,6 +26,7 @@ reference machine.
   describes firmware and ACPI dependencies of NVIDIA RTD3 support, including
   `_PR0` and `_PR3`.
 - [Limine configuration reference](https://github.com/Limine-Bootloader/Limine/blob/v12.x/CONFIG.md)
+- [Limine entry-tool pre/post hooks](https://gitlab.com/Zesko/limine-entry-tool/-/blob/master/README.md#hooks)
   documents entries, paths and configuration syntax.
 - [CachyOS boot manager documentation](https://wiki.cachyos.org/configuration/boot_manager_configuration/)
   describes the distribution integration used by the toolkit.

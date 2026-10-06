@@ -34,7 +34,7 @@ grep -Fq "Windows Time service remains enabled" "$ROOT/scripts/windows/dual-boot
 [[ -x "$ROOT/scripts/06-alpm-refresh.sh" ]] \
     || fail "ALPM refresh helper is not executable"
 grep -Fq 'Exec = /usr/local/lib/omen-acpi-fix/scripts/06-alpm-refresh.sh' \
-    "$ROOT/packaging/90-omen-acpi-refresh.hook" \
+    "$ROOT/packaging/99-omen-acpi-refresh.hook" \
     || fail "ALPM hook does not call the installed refresh helper"
 for required_target in \
     'Target = linux-cachyos' \
@@ -48,9 +48,12 @@ for required_target in \
     'Target = limine-snapper-sync' \
     'Target = nvidia-utils' \
     'Target = systemd' \
+    'Target = amd-ucode' \
+    'Target = intel-ucode' \
+    'Target = linux-firmware*' \
     'Target = *-dkms' \
     'Target = *-dkms-git'; do
-    grep -Fxq "$required_target" "$ROOT/packaging/90-omen-acpi-refresh.hook" \
+    grep -Fxq "$required_target" "$ROOT/packaging/99-omen-acpi-refresh.hook" \
         || fail "ALPM hook is missing required trigger: $required_target"
 done
 OMEN_ACPI_MANAGER="$work/missing-manager" "$ROOT/scripts/06-alpm-refresh.sh" \
@@ -1239,6 +1242,7 @@ python3 "$ROOT/tests/test_stock_recovery.py"
 
 printf 'multi-kernel entry checks...\n'
 python3 "$ROOT/tests/test_kernel_entries.py"
+python3 "$ROOT/tests/test_maintenance.py"
 
 printf 'interactive menu checks...\n'
 bash "$ROOT/tests/test_interactive_menus.sh"

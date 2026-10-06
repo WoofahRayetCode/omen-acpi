@@ -11,8 +11,6 @@ readonly VERSION="2.5.0"
 readonly TARGET_ROOT="/usr/local/lib/omen-acpi-fix"
 readonly TARGET_BIN="/usr/local/bin/omen-acpi"
 readonly TARGET_DOC="/usr/local/share/doc/omen-acpi-fix"
-readonly LOCK_DIRECTORY="/run/omen-acpi-fix"
-readonly LOCK_FILE="$LOCK_DIRECTORY/manager.lock"
 readonly SELF_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 source_snapshot=''
@@ -31,6 +29,9 @@ doc_activated=0
 transaction_started=0
 transaction_committed=0
 repair_mode=0
+hook_transaction=''
+hooks_prepared=0
+preserve_hook_transaction=0
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -84,6 +85,10 @@ safe_remove_file() {
 rollback_transaction() {
     (( transaction_started )) || return 0
     warn "Installation failed; restoring the previous /usr/local installation."
+    if (( hooks_prepared )); then
+        python3 "$source_snapshot/scripts/07-maintenance.py" rollback --transaction "$hook_transaction" \
+            || { preserve_hook_transaction=1; warn "Hook rollback needs attention; transaction retained at $hook_transaction"; }
+    fi
 
     if (( bin_activated )) && path_exists "$TARGET_BIN"; then
         rm -f -- "$TARGET_BIN" \
@@ -129,7 +134,7 @@ cleanup_stages() {
     safe_remove_directory "$app_stage"
     safe_remove_directory "$doc_stage"
     safe_remove_file "$bin_stage"
-    safe_remove_directory "$source_snapshot"
+    (( preserve_hook_transaction )) || safe_remove_directory "$source_snapshot"
 }
 
 cleanup_backups() {
@@ -179,7 +184,7 @@ EOF
     esac
 done
 
-for command in bash cat chmod chown cmp dirname flock install mktemp mv realpath rm sha256sum stat; do
+for command in python3 id bash cat chmod chown cmp dirname flock install mktemp mv realpath rm sha256sum stat; do
     command -v "$command" >/dev/null 2>&1 || die "Required command not found: $command"
 done
 
@@ -188,26 +193,6 @@ if (( EUID != 0 )); then
     exec /usr/bin/sudo -- "$(realpath -- "$0")" \
         ${original_arguments[@]+"${original_arguments[@]}"}
 fi
-
-[[ -d /run && ! -L /run && "$(stat -c '%u' -- /run)" == "0" ]] \
-    || die "The runtime directory is unavailable or unsafe: /run"
-runtime_permissions="$(stat -c '%A' -- /run)"
-[[ "${runtime_permissions:5:1}" != "w" && "${runtime_permissions:8:1}" != "w" ]] \
-    || die "The runtime directory is group- or world-writable: /run"
-if [[ ! -e "$LOCK_DIRECTORY" && ! -L "$LOCK_DIRECTORY" ]]; then
-    install -d -o root -g root -m 0700 "$LOCK_DIRECTORY"
-fi
-[[ -d "$LOCK_DIRECTORY" && ! -L "$LOCK_DIRECTORY" \
-    && "$(stat -c '%u' -- "$LOCK_DIRECTORY")" == "0" \
-    && "$(stat -c '%a' -- "$LOCK_DIRECTORY")" == "700" ]] \
-    || die "The toolkit lock directory is unsafe: $LOCK_DIRECTORY"
-if path_exists "$LOCK_FILE"; then
-    [[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" \
-        && "$(stat -c '%u' -- "$LOCK_FILE")" == "0" ]] \
-        || die "The toolkit lock file is unsafe: $LOCK_FILE"
-fi
-exec 9>>"$LOCK_FILE"
-flock -x 9 || die "Could not acquire the OMEN ACPI installation lock."
 
 trap on_exit EXIT
 
@@ -225,7 +210,11 @@ release_files=(
     scripts/01-collect-acpi.sh
     scripts/02-build-dsdt.sh
     scripts/03-manage-limine-entry.sh
-    packaging/90-omen-acpi-refresh.hook
+    packaging/99-omen-acpi-refresh.hook
+    packaging/85-omen-acpi-refresh
+    scripts/07-maintenance.py
+    scripts/08-locks.sh
+    tests/test_maintenance.py
     scripts/04-stock-recovery.py
     scripts/05-kernel-entries.py
     scripts/06-alpm-refresh.sh
@@ -289,6 +278,12 @@ done
     cd "$source_snapshot"
     sha256sum --check --strict SHA256SUMS
 ) || die "Release checksum verification failed."
+
+# Only source the shared lock implementation after verifying the private copy.
+# shellcheck source=scripts/08-locks.sh
+source "$source_snapshot/scripts/08-locks.sh"
+omen_acpi_acquire_locks || die "Could not acquire the shared boot/toolkit locks."
+export OMEN_ACPI_INTERNAL_OPERATION=1
 
 ensure_root_directory() {
     local path="$1" mode="${2:-0755}" owner permissions
@@ -366,7 +361,9 @@ for script_name in \
     02-build-dsdt.sh \
     03-manage-limine-entry.sh \
     05-kernel-entries.py \
-    06-alpm-refresh.sh; do
+    06-alpm-refresh.sh \
+    07-maintenance.py \
+    08-locks.sh; do
     install -o root -g root -m 0755 \
         "$source_snapshot/scripts/$script_name" \
         "$app_stage/scripts/$script_name"
@@ -376,8 +373,16 @@ install -o root -g root -m 0755 \
     "$app_stage/scripts/04-stock-recovery.py"
 install -d -o root -g root -m 0755 "$app_stage/alpm"
 install -o root -g root -m 0644 \
-    "$source_snapshot/packaging/90-omen-acpi-refresh.hook" \
-    "$app_stage/alpm/90-omen-acpi-refresh.hook"
+    "$source_snapshot/packaging/99-omen-acpi-refresh.hook" \
+    "$app_stage/alpm/99-omen-acpi-refresh.hook"
+install -o root -g root -m 0755 \
+    "$source_snapshot/packaging/85-omen-acpi-refresh" \
+    "$app_stage/alpm/85-omen-acpi-refresh"
+hook_transaction="$source_snapshot/hooks-transaction"
+install -d -m 0700 "$hook_transaction"
+python3 "$source_snapshot/scripts/07-maintenance.py" prepare \
+    --source "$app_stage" --previous "$TARGET_ROOT" --transaction "$hook_transaction"
+hooks_prepared=1
 printf '%s\n' "$VERSION" > "$app_stage/VERSION"
 chown root:root "$app_stage/VERSION"
 chmod 0644 "$app_stage/VERSION"
@@ -428,6 +433,7 @@ doc_stage=''
 bin_activated=1
 mv -T -- "$bin_stage" "$TARGET_BIN"
 bin_stage=''
+python3 "$source_snapshot/scripts/07-maintenance.py" apply --transaction "$hook_transaction"
 transaction_committed=1
 
 cleanup_backups
@@ -438,18 +444,7 @@ cleanup_stages
 source_snapshot=''
 trap - EXIT
 
-alpm_hook_source="$TARGET_ROOT/alpm/90-omen-acpi-refresh.hook"
-alpm_hook_target="/usr/share/libalpm/hooks/90-omen-acpi-refresh.hook"
-if [[ -f "$alpm_hook_source" && ! -L "$alpm_hook_source" ]]; then
-    if [[ -d /usr/share/libalpm/hooks && ! -L /usr/share/libalpm/hooks ]]; then
-        install -o root -g root -m 0644 "$alpm_hook_source" "$alpm_hook_target" \
-            || warn "Could not install the ALPM refresh hook at $alpm_hook_target."
-    else
-        warn "ALPM hooks directory is absent; run 'omen-acpi refresh' after kernel or Limine updates."
-    fi
-fi
-
-for variant in s5 combined; do
+for variant in s5 combined s5-vfio; do
     state="/var/lib/omen-acpi-${variant}-test"
     if [[ -d "$state" && ! -L "$state" ]]; then
         if ! OMEN_ACPI_LOCK_FD9_HELD=1 \
@@ -469,6 +464,6 @@ fi
 printf 'Run it as your normal user:\n\n'
 printf '  omen-acpi\n\n'
 printf 'The guided CLI will check the machine, boot state and dependencies.\n'
-printf 'Run "omen-acpi refresh" after kernel/initramfs or Limine updates if the ALPM hook is not present.\n'
+printf 'Automatic maintenance is installed for Limine rebuilds and ALPM transactions; check it with "omen-acpi doctor".\n'
 printf 'Existing v2.2.0 single-kernel state is migrated by the same command without rebuilding AML.\n'
 printf 'Refresh also rewrites pre-2.5.0 experimental Limine titles to the current names.\n'

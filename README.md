@@ -22,7 +22,7 @@ remain available and unchanged.
 > proofs after sync/removal, `doctor --fix` refresh of stale managed
 > entries, and the fail-soft ALPM PostTransaction refresh hook — were
 > AI-assisted with Grok.
-
+>
 > **This is not a generic HP OMEN fix.** Only the model, board and BIOS listed
 > below have been physically validated. An incompatible ACPI override can
 > prevent Linux from booting or cause instability, data loss, abnormal thermal
@@ -44,7 +44,7 @@ test variants:
 | ---------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | `s5`       | extends `_PTS(5)` with `PEGP.OMPR = 3` followed by `PEGP._PS3()`       | first test for the incomplete S5 shutdown                             |
 | `combined` | contains the complete S5 change and separately bounds two `WQBZ` loops | test the shutdown change together with the observed buffer correction |
-| `s5-vfio` | experimentally sets `NVDE = 1`, then applies the S5 sequence | VFIO/Looking Glass hosts whose NVIDIA GPU stays bound to `vfio-pci` |
+| `s5-vfio`  | experimentally sets `NVDE = 1`, then applies the S5 sequence           | VFIO/Looking Glass hosts whose NVIDIA GPU stays bound to `vfio-pci`   |
 
 All variants use the firmware's existing methods. They do not call the GPU
 power resource directly, modify suspend or runtime power management, flash the
@@ -371,6 +371,32 @@ prefix keeps the experimental entries after the stock `linux-cachyos*` names.
 
 Each experimental entry reuses the stock kernel and ordered stock initramfs
 paths and prepends one variant-specific ACPI early CPIO.
+
+## Keeping entries current through updates
+
+Installation adds two owned maintenance hooks:
+
+- `/etc/boot/hooks/post.d/85-omen-acpi-refresh` refreshes installed variants after
+  Limine finishes generating entries, including manual `limine-update`,
+  `limine-mkinitcpio` and snapshot synchronization.
+- `/etc/pacman.d/hooks/99-omen-acpi-refresh.hook` provides a final refresh after
+  relevant kernel, initramfs, NVIDIA/DKMS, microcode and firmware transactions.
+
+Both maintain installed S5, Combined and S5 VFIO entries for standard and LTS
+kernels. They preserve stock entries and the boot default. Missing entries are
+recreated only from verified owned state; modified or ambiguous entries remain
+blocked. Automatic maintenance never rebuilds AML or aborts a package update.
+A current refresh leaves boot files untouched.
+
+Check hook integrity and the latest automatic result with `omen-acpi doctor`.
+Use `omen-acpi doctor --fix` to repair missing owned hooks and refresh recoverable
+entries. Foreign or modified hook content is preserved for inspection. Warnings
+are also logged under the `omen-acpi` journal tag.
+
+The installer migrates an owned older `90-omen-acpi-refresh.hook` from
+`/usr/share/libalpm/hooks` transactionally. Install/uninstall failures restore
+owned hooks with the program. A BIOS or machine identity change blocks refresh;
+collect and validate fresh firmware from a stock boot before reinstalling.
 
 ## Stock return and preventive recovery
 

@@ -23,6 +23,9 @@ Target = limine-entry-tool
 Target = limine-snapper-sync
 Target = nvidia-utils
 Target = systemd
+Target = amd-ucode
+Target = intel-ucode
+Target = linux-firmware*
 Target = *-dkms
 Target = *-dkms-git
 

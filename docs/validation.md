@@ -152,3 +152,19 @@ fixtures to remain identical to v2.3.0. Version 2.5.0 additionally requires
 those same ACPI paths to remain identical to v2.4.0. Combined-on-LTS validation does not
 imply S5-on-LTS validation. No non-reference hardware has been physically
 validated.
+
+## Update-persistence changes (unreleased)
+
+The maintenance changes keep the existing ACPI transformations and boot-default
+policy. New synthetic regressions cover missing-entry restoration, exact stock
+body preservation, no-op refresh, transaction rollback, all three variants,
+inherited boot locks, contention, recursion, durable diagnostics and BIOS-change
+rejection. These are not new real-hardware compatibility claims.
+
+Before release, run `./tests/run.sh`, ShellCheck, Markdown lint and strict release
+checksums on Linux. On the CachyOS target, exercise a package update, a manual
+`limine-mkinitcpio` rebuild, snapshot sync and LTS installation/removal; verify
+`omen-acpi doctor` and `omen-acpi status all`, then boot the patched entry,
+verify the loaded DSDT and physically check shutdown. An unchanged stock entry
+must remain bootable. This Windows development host cannot perform those Linux
+filesystem/locking or hardware acceptance checks.

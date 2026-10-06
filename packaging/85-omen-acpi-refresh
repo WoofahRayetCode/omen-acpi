@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Paolo De Marinis
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Called by Limine under its boot-partition lock, before enrollment/remount.
+[[ "${OMEN_ACPI_INTERNAL_OPERATION:-0}" == 1 ]] && exit 0
+export OMEN_ACPI_BOOT_LOCK_FD200_HELD=1
+/usr/local/lib/omen-acpi-fix/scripts/06-alpm-refresh.sh || true
+exit 0
