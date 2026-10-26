@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Allows dependency installation when Pacman reports no pending upgrades with
+  an empty status-1 query; preserves failures and their diagnostics, including
+  the verification after a full system update.
+
 - Maintains installed S5, Combined and S5 VFIO entries after manual Limine
   rebuilds and snapshot sync through an owned `85-omen-acpi-refresh` post hook.
 - Moves the ALPM fallback to `/etc/pacman.d/hooks/99-omen-acpi-refresh.hook` and

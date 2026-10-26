@@ -393,6 +393,49 @@ PY
 [[ ! -e "$work/sudo.log" ]] \
     || fail "interactive test reached sudo: $(tr '\n' ';' < "$work/sudo.log")"
 
+printf 'dependency upgrade-query checks...\n'
+cat > "$work/fake-pacman" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == '-Qu' ]] || exit 2
+case "$OMEN_ACPI_TEST_QUERY" in
+    current) exit 1 ;;
+    empty-success) exit 0 ;;
+    upgrades) printf 'linux-cachyos 7.2.8-1 -> 7.2.9-1\n'; exit 0 ;;
+    diagnostic) printf 'error: failed to read package database\n' >&2; exit 1 ;;
+    unexpected-status) exit 2 ;;
+    failed-output) printf 'linux-cachyos 7.2.8-1 -> 7.2.9-1\n'; exit 1 ;;
+esac
+EOF
+chmod 0700 "$work/fake-pacman"
+sed "s|readonly PACMAN_BIN=\"/usr/bin/pacman\"|readonly PACMAN_BIN=\"$work/fake-pacman\"|" \
+    "$ROOT/omen-acpi" > "$work/dependency-frontend"
+(
+    export OMEN_ACPI_TESTING=1 OMEN_ACPI_SOURCE_ONLY=1
+    export HOME="$work/dependency-home"
+    # shellcheck disable=SC1090
+    source "$work/dependency-frontend"
+    for query in current empty-success; do
+        export OMEN_ACPI_TEST_QUERY="$query"
+        output="$(query_pending_upgrades)" || fail "empty upgrade query was rejected: $query"
+        [[ -z "$output" ]] || fail "empty upgrade query emitted package data"
+    done
+    export OMEN_ACPI_TEST_QUERY=upgrades
+    output="$(query_pending_upgrades)" || fail "pending upgrades were rejected"
+    [[ "$output" == 'linux-cachyos 7.2.8-1 -> 7.2.9-1' ]] \
+        || fail "pending upgrades were not preserved"
+    for query in diagnostic unexpected-status failed-output; do
+        export OMEN_ACPI_TEST_QUERY="$query"
+        if query_pending_upgrades > "$work/query.out" 2> "$work/query.err"; then
+            fail "failed upgrade query was accepted: $query"
+        fi
+        [[ ! -s "$work/query.out" ]] || fail "failed query leaked package data"
+        if [[ "$query" == diagnostic ]]; then
+            grep -Fq 'failed to read package database' "$work/query.err" \
+                || fail "package database diagnostic was lost"
+        fi
+    done
+)
+
 printf 'frontend state checks...\n'
 mkdir -p "$work/frontend"
 ln -s "$ROOT/scripts" "$work/frontend/scripts"

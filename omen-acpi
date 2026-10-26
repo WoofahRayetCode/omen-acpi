@@ -406,6 +406,21 @@ ensure_admin() {
     fi
 }
 
+query_pending_upgrades() {
+    local output rc=0
+    output="$("$PACMAN_BIN" -Qu 2>&1)" || rc=$?
+    # Pacman returns 1 when the upgrade filter matches no installed packages.
+    # Only accept that status when neither packages nor diagnostics were emitted.
+    if (( rc == 1 )) && [[ -z "$output" ]]; then
+        return 0
+    fi
+    if (( rc != 0 )); then
+        [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+        return 1
+    fi
+    printf '%s' "$output"
+}
+
 install_dependencies() {
     local profile="${1:-full}" package pending_upgrades remaining_upgrades upgrade_count
     collect_missing_dependencies "$profile"
@@ -422,7 +437,7 @@ install_dependencies() {
     [[ -x "$PACMAN_BIN" ]] \
         || die "Automatic dependency installation requires Pacman on Arch/CachyOS."
 
-    if ! pending_upgrades="$($PACMAN_BIN -Qu 2>/dev/null)"; then
+    if ! pending_upgrades="$(query_pending_upgrades)"; then
         die "Pacman could not determine whether the system has pending upgrades. Run 'sudo pacman -Syu', then retry."
     fi
     if [[ -n "$pending_upgrades" ]]; then
@@ -437,7 +452,7 @@ install_dependencies() {
         ensure_admin
         "$SUDO_BIN" "$PACMAN_BIN" -Syu \
             || die "The full system update failed. Resolve Pacman errors before retrying."
-        if ! remaining_upgrades="$($PACMAN_BIN -Qu 2>/dev/null)"; then
+        if ! remaining_upgrades="$(query_pending_upgrades)"; then
             die "Pacman could not verify the system state after the update."
         fi
         [[ -z "$remaining_upgrades" ]] \
